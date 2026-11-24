@@ -1,0 +1,682 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserStatus {
+  ACTIVE
+  DISABLED
+}
+
+model User {
+  id           String     @id @default(uuid()) @db.Uuid
+  email        String     @unique
+  fullName     String     @map("full_name")
+  passwordHash String     @map("password_hash")
+  status       UserStatus @default(ACTIVE)
+  failedLogins Int        @default(0) @map("failed_logins")
+  lockedUntil  DateTime?  @map("locked_until") @db.Timestamptz(3)
+  lastLoginAt  DateTime?  @map("last_login_at") @db.Timestamptz(3)
+  createdAt    DateTime   @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt    DateTime   @updatedAt @map("updated_at") @db.Timestamptz(3)
+  roles        UserRole[]
+  sessions     Session[]
+
+  @@map("app_user")
+}
+
+model Role {
+  id          String           @id @default(uuid()) @db.Uuid
+  code        String           @unique
+  name        String
+  description String
+  users       UserRole[]
+  permissions RolePermission[]
+
+  @@map("role")
+}
+
+model Permission {
+  id          String           @id @default(uuid()) @db.Uuid
+  code        String           @unique
+  description String
+  roles       RolePermission[]
+
+  @@map("permission")
+}
+
+model UserRole {
+  userId String @map("user_id") @db.Uuid
+  roleId String @map("role_id") @db.Uuid
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role   Role   @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@id([userId, roleId])
+  @@map("user_role")
+}
+
+model RolePermission {
+  roleId       String     @map("role_id") @db.Uuid
+  permissionId String     @map("permission_id") @db.Uuid
+  role         Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission   Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@id([roleId, permissionId])
+  @@map("role_permission")
+}
+
+model Session {
+  id         String    @id @default(uuid()) @db.Uuid
+  userId     String    @map("user_id") @db.Uuid
+  tokenHash  String    @unique @map("token_hash")
+  csrfToken  String    @map("csrf_token")
+  createdAt  DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  lastSeenAt DateTime  @default(now()) @map("last_seen_at") @db.Timestamptz(3)
+  expiresAt  DateTime  @map("expires_at") @db.Timestamptz(3)
+  revokedAt  DateTime? @map("revoked_at") @db.Timestamptz(3)
+  ip         String?
+  userAgent  String?   @map("user_agent")
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("session")
+}
+
+model AuditLog {
+  id          String   @id @default(uuid()) @db.Uuid
+  at          DateTime @default(now()) @db.Timestamptz(3)
+  actorUserId String?  @map("actor_user_id") @db.Uuid
+  action      String
+  entityType  String?  @map("entity_type")
+  entityId    String?  @map("entity_id")
+  ip          String?
+  userAgent   String?  @map("user_agent")
+  detail      Json?
+
+  @@index([at])
+  @@index([actorUserId])
+  @@map("audit_log")
+}
+
+enum ApprovalStatus {
+  DRAFT
+  PENDING_APPROVAL
+  APPROVED
+  REJECTED
+  @@map("approval_status")
+}
+enum RequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  @@map("request_status")
+}
+enum EligibilityStatus {
+  NOT_REVIEWED
+  APPROVED
+  SUSPENDED
+  @@map("eligibility_status")
+}
+enum SourceType {
+  DIRECT
+  REFERRED
+  UNKNOWN
+  @@map("source_type")
+}
+enum LifecycleStatus {
+  ACTIVE
+  ON_HOLD
+  STOPPED_PENDING_SETTLEMENT
+  CLOSED_SUCCESSFULLY
+  CLOSED_UNSUCCESSFULLY
+  @@map("lifecycle_status")
+}
+enum PayerType {
+  CANDIDATE
+  EMPLOYER
+  COMPANY
+  @@map("payer_type")
+}
+enum SettlementStatus {
+  DRAFT
+  PENDING_APPROVAL
+  APPROVED
+  SUPERSEDED
+  @@map("settlement_status")
+}
+enum SettlementLineType {
+  EXPENSE
+  ADJUSTMENT
+  @@map("settlement_line_type")
+}
+
+model Country {
+  id                      String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  iso2Code                String            @unique @map("iso2_code") @db.Char(2)
+  iso3Code                String?           @unique @map("iso3_code") @db.Char(3)
+  name                    String
+  active                  Boolean           @default(true)
+  eligibility             EligibilityStatus @default(NOT_REVIEWED)
+  eligibilitySource       String?           @map("eligibility_source")
+  eligibilityVerifiedAt   DateTime?         @map("eligibility_verified_at") @db.Timestamptz(3)
+  eligibilityVerifiedById String?           @map("eligibility_verified_by_id") @db.Uuid
+  approvalStatus          ApprovalStatus    @default(DRAFT) @map("approval_status")
+  createdAt               DateTime          @default(now()) @map("created_at") @db.Timestamptz(3)
+  cities                  City[]
+  employers               Employer[]
+  demands                 JobDemand[]
+
+  @@map("country")
+}
+
+model City {
+  id             String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  countryId      String        @map("country_id") @db.Uuid
+  name           String
+  normalizedName String        @map("normalized_name")
+  region         String?
+  active         Boolean       @default(true)
+  country        Country       @relation(fields: [countryId], references: [id])
+  positions      JobPosition[]
+
+  @@unique([countryId, normalizedName])
+  @@unique([id, countryId])
+  @@map("city")
+}
+
+model JobTitle {
+  id              String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  title           String
+  normalizedTitle String        @unique @map("normalized_title")
+  description     String?
+  active          Boolean       @default(true)
+  positions       JobPosition[]
+
+  @@map("job_title")
+}
+
+model Employer {
+  id                  String      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  registeredCountryId String      @map("registered_country_id") @db.Uuid
+  legalName           String      @map("legal_name")
+  reference           String?
+  contactName         String?     @map("contact_name")
+  email               String?
+  phone               String?
+  verificationStatus  String      @default("UNVERIFIED") @map("verification_status")
+  active              Boolean     @default(true)
+  createdAt           DateTime    @default(now()) @map("created_at") @db.Timestamptz(3)
+  registeredCountry   Country     @relation(fields: [registeredCountryId], references: [id])
+  demands             JobDemand[]
+
+  @@map("employer")
+}
+
+model JobDemand {
+  id                   String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  employerId           String         @map("employer_id") @db.Uuid
+  destinationCountryId String         @map("destination_country_id") @db.Uuid
+  reference            String         @unique
+  feimsReference       String?        @map("feims_reference")
+  approvalStatus       ApprovalStatus @default(DRAFT) @map("approval_status")
+  approvedAt           DateTime?      @map("approved_at") @db.Timestamptz(3)
+  approvedById         String?        @map("approved_by_id") @db.Uuid
+  expiresOn            DateTime?      @map("expires_on") @db.Date
+  active               Boolean        @default(true)
+  createdAt            DateTime       @default(now()) @map("created_at") @db.Timestamptz(3)
+  employer             Employer       @relation(fields: [employerId], references: [id])
+  destinationCountry   Country        @relation(fields: [destinationCountryId], references: [id])
+  positions            JobPosition[]
+
+  @@unique([id, destinationCountryId])
+  @@map("job_demand")
+}
+
+model JobPosition {
+  id                   String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  demandId             String            @map("demand_id") @db.Uuid
+  destinationCountryId String            @map("destination_country_id") @db.Uuid
+  cityId               String            @map("city_id") @db.Uuid
+  jobTitleId           String            @map("job_title_id") @db.Uuid
+  vacancies            Int
+  salaryAmount         Decimal?          @map("salary_amount") @db.Decimal(14, 2)
+  salaryCurrency       String?           @map("salary_currency") @db.VarChar(3)
+  terms                String?
+  active               Boolean           @default(true)
+  createdAt            DateTime          @default(now()) @map("created_at") @db.Timestamptz(3)
+  demand               JobDemand         @relation(fields: [demandId, destinationCountryId], references: [id, destinationCountryId])
+  city                 City              @relation(fields: [cityId, destinationCountryId], references: [id, countryId])
+  jobTitle             JobTitle          @relation(fields: [jobTitleId], references: [id])
+  priceVersions        JobPriceVersion[]
+  applications         Application[]
+
+  @@unique([id, destinationCountryId])
+  @@index([demandId])
+  @@map("job_position")
+}
+
+model JobPriceVersion {
+  id                  String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  positionId          String           @map("position_id") @db.Uuid
+  currency            String           @default("NPR") @db.VarChar(3)
+  effectiveFrom       DateTime         @map("effective_from") @db.Date
+  effectiveTo         DateTime?        @map("effective_to") @db.Date
+  approvalStatus      ApprovalStatus   @default(DRAFT) @map("approval_status")
+  approvedById        String?          @map("approved_by_id") @db.Uuid
+  changeReason        String?          @map("change_reason")
+  complianceReference String?          @map("compliance_reference")
+  createdAt           DateTime         @default(now()) @map("created_at") @db.Timestamptz(3)
+  position            JobPosition      @relation(fields: [positionId], references: [id])
+  components          PriceComponent[]
+  applications        Application[]
+
+  @@unique([positionId, id])
+  @@map("job_price_version")
+}
+
+model PriceComponent {
+  id             String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  priceVersionId String          @map("price_version_id") @db.Uuid
+  componentType  String          @map("component_type")
+  payer          PayerType
+  amount         Decimal         @db.Decimal(14, 2)
+  priceVersion   JobPriceVersion @relation(fields: [priceVersionId], references: [id])
+
+  @@index([priceVersionId])
+  @@map("price_component")
+}
+
+model Candidate {
+  id             String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  candidateCode  String              @unique @map("candidate_code")
+  fullName       String              @map("full_name")
+  nameNormalized String              @map("name_normalized")
+  dateOfBirth    DateTime?           @map("date_of_birth") @db.Date
+  phone          String?
+  phoneDigits    String?             @map("phone_digits")
+  altPhone       String?             @map("alt_phone")
+  altPhoneDigits String?             @map("alt_phone_digits")
+  email          String?
+  address        String?
+  createdById    String?             @map("created_by_id") @db.Uuid
+  createdAt      DateTime            @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt      DateTime            @updatedAt @map("updated_at") @db.Timestamptz(3)
+  applications   Application[]
+  passports      CandidatePassport[]
+
+  @@index([nameNormalized, dateOfBirth])
+  @@map("candidate")
+}
+
+model CandidatePassport {
+  id                   String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  candidateId          String    @map("candidate_id") @db.Uuid
+  passportNumberCipher String    @map("passport_number_ciphertext")
+  passportLookupHmac   String    @unique @map("passport_lookup_hmac")
+  keyVersion           Int       @default(1) @map("key_version")
+  issuingCountryId     String?   @map("issuing_country_id") @db.Uuid
+  issueDate            DateTime  @map("issue_date") @db.Date
+  expiryDate           DateTime  @map("expiry_date") @db.Date
+  isCurrent            Boolean   @default(true) @map("is_current")
+  createdById          String?   @map("created_by_id") @db.Uuid
+  createdAt            DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  candidate            Candidate @relation(fields: [candidateId], references: [id])
+
+  @@index([candidateId])
+  @@map("candidate_passport")
+}
+
+model ReferralPartner {
+  id                 String                    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name               String
+  contact            String?
+  partnerType        String?                   @map("partner_type")
+  verificationStatus String                    @default("UNVERIFIED") @map("verification_status")
+  active             Boolean                   @default(true)
+  createdAt          DateTime                  @default(now()) @map("created_at") @db.Timestamptz(3)
+  applications       Application[]
+  sourceChanges      ApplicationSourceChange[]
+  commissions        PartnerCommission[]
+
+  @@map("referral_partner")
+}
+
+model Application {
+  id                   String                      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  code                 String                      @unique
+  candidateId          String                      @map("candidate_id") @db.Uuid
+  positionId           String?                     @map("position_id") @db.Uuid
+  priceVersionId       String?                     @map("price_version_id") @db.Uuid
+  currency             String?                     @db.VarChar(3)
+  agreedAmountSnapshot Decimal?                    @map("agreed_amount_snapshot") @db.Decimal(14, 2)
+  packageTotalSnapshot Decimal?                    @map("package_total_snapshot") @db.Decimal(14, 2)
+  sourceType           SourceType                  @default(DIRECT) @map("source_type")
+  referralPartnerId    String?                     @map("referral_partner_id") @db.Uuid
+  lifecycleStatus      LifecycleStatus             @default(ACTIVE) @map("lifecycle_status")
+  holdReason           String?                     @map("hold_reason")
+  nextReviewOn         DateTime?                   @map("next_review_on") @db.Date
+  assignedToId         String?                     @map("assigned_to_id") @db.Uuid
+  openedAt             DateTime                    @default(now()) @map("opened_at") @db.Timestamptz(3)
+  closedAt             DateTime?                   @map("closed_at") @db.Timestamptz(3)
+  candidate            Candidate                   @relation(fields: [candidateId], references: [id])
+  position             JobPosition?                @relation(fields: [positionId], references: [id])
+  priceVersion         JobPriceVersion?            @relation(fields: [positionId, priceVersionId], references: [positionId, id])
+  referralPartner      ReferralPartner?            @relation(fields: [referralPartnerId], references: [id])
+  priceComponents      ApplicationPriceComponent[]
+  statusHistory        ApplicationStatusHistory[]
+  sourceChanges        ApplicationSourceChange[]
+  installments         ApplicationInstallment[]
+  payments             CandidatePayment[]
+  expenseAllocations   ExpenseAllocation[]
+  commission           PartnerCommission?
+  settlements          CandidateSettlement[]
+
+  @@unique([id, referralPartnerId])
+  @@index([candidateId])
+  @@index([positionId])
+  @@index([lifecycleStatus])
+  @@map("application")
+}
+
+model ApplicationPriceComponent {
+  id            String      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  applicationId String      @map("application_id") @db.Uuid
+  componentType String      @map("component_type")
+  payer         PayerType
+  amount        Decimal     @db.Decimal(14, 2)
+  application   Application @relation(fields: [applicationId], references: [id])
+
+  @@index([applicationId])
+  @@map("application_price_component")
+}
+
+model ApplicationStatusHistory {
+  id            String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  applicationId String           @map("application_id") @db.Uuid
+  fromStatus    LifecycleStatus? @map("from_status")
+  toStatus      LifecycleStatus  @map("to_status")
+  reason        String?
+  changedById   String?          @map("changed_by_id") @db.Uuid
+  changedAt     DateTime         @default(now()) @map("changed_at") @db.Timestamptz(3)
+  application   Application      @relation(fields: [applicationId], references: [id])
+
+  @@index([applicationId])
+  @@map("application_status_history")
+}
+
+model ApplicationSourceChange {
+  id             String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  applicationId  String           @map("application_id") @db.Uuid
+  oldSourceType  SourceType       @map("old_source_type")
+  oldPartnerId   String?          @map("old_partner_id") @db.Uuid
+  newSourceType  SourceType       @map("new_source_type")
+  newPartnerId   String?          @map("new_partner_id") @db.Uuid
+  reason         String
+  status         RequestStatus    @default(PENDING)
+  requestedById  String?          @map("requested_by_id") @db.Uuid
+  requestedAt    DateTime         @default(now()) @map("requested_at") @db.Timestamptz(3)
+  decidedById    String?          @map("decided_by_id") @db.Uuid
+  decidedAt      DateTime?        @map("decided_at") @db.Timestamptz(3)
+  decisionReason String?          @map("decision_reason")
+  application    Application      @relation(fields: [applicationId], references: [id])
+  newPartner     ReferralPartner? @relation(fields: [newPartnerId], references: [id])
+
+  @@index([applicationId])
+  @@map("application_source_change")
+}
+
+model PaymentPlanTemplate {
+  id           String                   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name         String                   @unique
+  active       Boolean                  @default(true)
+  createdAt    DateTime                 @default(now()) @map("created_at") @db.Timestamptz(3)
+  installments PaymentPlanInstallment[]
+
+  @@map("payment_plan_template")
+}
+
+model PaymentPlanInstallment {
+  id           String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  planId       String              @map("plan_id") @db.Uuid
+  seq          Int
+  label        String
+  sharePercent Decimal?            @map("share_percent") @db.Decimal(5, 2)
+  fixedAmount  Decimal?            @map("fixed_amount") @db.Decimal(14, 2)
+  plan         PaymentPlanTemplate @relation(fields: [planId], references: [id])
+
+  @@unique([planId, seq])
+  @@map("payment_plan_installment")
+}
+
+model ApplicationInstallment {
+  id             String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  applicationId  String             @map("application_id") @db.Uuid
+  seq            Int
+  label          String
+  expectedAmount Decimal            @map("expected_amount") @db.Decimal(14, 2)
+  dueOn          DateTime?          @map("due_on") @db.Date
+  createdAt      DateTime           @default(now()) @map("created_at") @db.Timestamptz(3)
+  application    Application        @relation(fields: [applicationId], references: [id])
+  payments       CandidatePayment[]
+
+  @@unique([applicationId, seq])
+  @@unique([id, applicationId])
+  @@map("application_installment")
+}
+
+model CandidatePayment {
+  id                String                  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  applicationId     String                  @map("application_id") @db.Uuid
+  installmentId     String?                 @map("installment_id") @db.Uuid
+  amount            Decimal                 @db.Decimal(14, 2)
+  currency          String                  @db.VarChar(3)
+  receivedOn        DateTime                @map("received_on") @db.Date
+  method            String
+  receiptNumber     String                  @unique @map("receipt_number")
+  bankReference     String?                 @map("bank_reference")
+  payerName         String                  @map("payer_name")
+  payerRelationship String?                 @map("payer_relationship")
+  note              String?
+  reversesPaymentId String?                 @unique @map("reverses_payment_id") @db.Uuid
+  reversalReason    String?                 @map("reversal_reason")
+  createdById       String?                 @map("created_by_id") @db.Uuid
+  verifiedById      String?                 @map("verified_by_id") @db.Uuid
+  createdAt         DateTime                @default(now()) @map("created_at") @db.Timestamptz(3)
+  application       Application             @relation(fields: [applicationId], references: [id])
+  installment       ApplicationInstallment? @relation(fields: [installmentId], references: [id])
+  reverses          CandidatePayment?       @relation("PaymentReversal", fields: [reversesPaymentId], references: [id])
+  reversal          CandidatePayment?       @relation("PaymentReversal")
+
+  @@index([applicationId])
+  @@index([receivedOn])
+  @@map("candidate_payment")
+}
+
+model ExpenseCategory {
+  id             String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  parentId       String?           @map("parent_id") @db.Uuid
+  name           String
+  normalizedName String            @map("normalized_name")
+  isSystem       Boolean           @default(false) @map("is_system")
+  active         Boolean           @default(true)
+  createdById    String?           @map("created_by_id") @db.Uuid
+  createdAt      DateTime          @default(now()) @map("created_at") @db.Timestamptz(3)
+  parent         ExpenseCategory?  @relation("CategoryTree", fields: [parentId], references: [id])
+  children       ExpenseCategory[] @relation("CategoryTree")
+  expenses       CompanyExpense[]
+
+  @@unique([parentId, normalizedName])
+  @@map("expense_category")
+}
+
+model CompanyExpense {
+  id                String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  categoryId        String              @map("category_id") @db.Uuid
+  expenseDate       DateTime            @map("expense_date") @db.Date
+  amount            Decimal             @db.Decimal(14, 2)
+  currency          String              @db.VarChar(3)
+  payee             String
+  paymentMethod     String              @map("payment_method")
+  reference         String?
+  description       String
+  reversesExpenseId String?             @unique @map("reverses_expense_id") @db.Uuid
+  reversalReason    String?             @map("reversal_reason")
+  recordedById      String?             @map("recorded_by_id") @db.Uuid
+  approvedById      String?             @map("approved_by_id") @db.Uuid
+  createdAt         DateTime            @default(now()) @map("created_at") @db.Timestamptz(3)
+  category          ExpenseCategory     @relation(fields: [categoryId], references: [id])
+  allocations       ExpenseAllocation[]
+  reverses          CompanyExpense?     @relation("ExpenseReversal", fields: [reversesExpenseId], references: [id])
+  reversal          CompanyExpense?     @relation("ExpenseReversal")
+
+  @@index([expenseDate])
+  @@index([categoryId])
+  @@map("company_expense")
+}
+
+model ExpenseAllocation {
+  expenseId       String         @map("expense_id") @db.Uuid
+  applicationId   String         @map("application_id") @db.Uuid
+  allocatedAmount Decimal        @map("allocated_amount") @db.Decimal(14, 2)
+  note            String?
+  expense         CompanyExpense @relation(fields: [expenseId], references: [id])
+  application     Application    @relation(fields: [applicationId], references: [id])
+
+  @@id([expenseId, applicationId])
+  @@index([applicationId])
+  @@map("expense_allocation")
+}
+
+model PartnerCommission {
+  id             String                    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  applicationId  String                    @unique @map("application_id") @db.Uuid
+  partnerId      String                    @map("partner_id") @db.Uuid
+  agreedAmount   Decimal                   @map("agreed_amount") @db.Decimal(14, 2)
+  currency       String                    @db.VarChar(3)
+  payableWhen    String?                   @map("payable_when")
+  approvalStatus ApprovalStatus            @default(DRAFT) @map("approval_status")
+  approvedById   String?                   @map("approved_by_id") @db.Uuid
+  approvedAt     DateTime?                 @map("approved_at") @db.Timestamptz(3)
+  createdAt      DateTime                  @default(now()) @map("created_at") @db.Timestamptz(3)
+  application    Application               @relation(fields: [applicationId], references: [id])
+  partner        ReferralPartner           @relation(fields: [partnerId], references: [id])
+  amountHistory  CommissionAmountHistory[]
+  payments       CommissionPayment[]
+
+  @@map("partner_commission")
+}
+
+model CommissionAmountHistory {
+  id           String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  commissionId String            @map("commission_id") @db.Uuid
+  oldAmount    Decimal?          @map("old_amount") @db.Decimal(14, 2)
+  newAmount    Decimal           @map("new_amount") @db.Decimal(14, 2)
+  reason       String
+  changedById  String?           @map("changed_by_id") @db.Uuid
+  changedAt    DateTime          @default(now()) @map("changed_at") @db.Timestamptz(3)
+  commission   PartnerCommission @relation(fields: [commissionId], references: [id])
+
+  @@index([commissionId])
+  @@map("commission_amount_history")
+}
+
+model CommissionPayment {
+  id                String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  commissionId      String             @map("commission_id") @db.Uuid
+  amount            Decimal            @db.Decimal(14, 2)
+  currency          String             @db.VarChar(3)
+  paidOn            DateTime           @map("paid_on") @db.Date
+  method            String
+  bankReference     String?            @map("bank_reference")
+  reversesPaymentId String?            @unique @map("reverses_payment_id") @db.Uuid
+  reversalReason    String?            @map("reversal_reason")
+  createdById       String?            @map("created_by_id") @db.Uuid
+  createdAt         DateTime           @default(now()) @map("created_at") @db.Timestamptz(3)
+  commission        PartnerCommission  @relation(fields: [commissionId], references: [id])
+  reverses          CommissionPayment? @relation("CommissionPaymentReversal", fields: [reversesPaymentId], references: [id])
+  reversal          CommissionPayment? @relation("CommissionPaymentReversal")
+
+  @@index([commissionId])
+  @@index([paidOn])
+  @@map("commission_payment")
+}
+
+model CandidateSettlement {
+  id                     String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  applicationId          String           @map("application_id") @db.Uuid
+  revisionNo             Int              @map("revision_no")
+  stopReason             String           @map("stop_reason")
+  status                 SettlementStatus @default(DRAFT)
+  currency               String           @db.VarChar(3)
+  receivedTotalSnapshot  Decimal          @map("received_total_snapshot") @db.Decimal(14, 2)
+  approvedRetentionTotal Decimal          @default(0) @map("approved_retention_total") @db.Decimal(14, 2)
+  refundDue              Decimal          @default(0) @map("refund_due") @db.Decimal(14, 2)
+  preparedById           String?          @map("prepared_by_id") @db.Uuid
+  approvedById           String?          @map("approved_by_id") @db.Uuid
+  approvedAt             DateTime?        @map("approved_at") @db.Timestamptz(3)
+  createdAt              DateTime         @default(now()) @map("created_at") @db.Timestamptz(3)
+  application            Application      @relation(fields: [applicationId], references: [id])
+  lines                  SettlementLine[]
+  refunds                CandidateRefund[]
+
+  @@unique([applicationId, revisionNo])
+  @@unique([id, applicationId])
+  @@map("candidate_settlement")
+}
+
+model SettlementLine {
+  id             String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  settlementId   String              @map("settlement_id") @db.Uuid
+  applicationId  String              @map("application_id") @db.Uuid
+  expenseId      String?             @map("expense_id") @db.Uuid
+  lineType       SettlementLineType  @map("line_type")
+  amount         Decimal             @db.Decimal(14, 2)
+  basis          String
+  approvalStatus ApprovalStatus      @default(DRAFT) @map("approval_status")
+  approvedById   String?             @map("approved_by_id") @db.Uuid
+  settlement     CandidateSettlement @relation(fields: [settlementId, applicationId], references: [id, applicationId])
+
+  @@index([settlementId])
+  @@map("settlement_line")
+}
+
+model CandidateRefund {
+  id               String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  settlementId     String              @map("settlement_id") @db.Uuid
+  amount           Decimal             @db.Decimal(14, 2)
+  currency         String              @db.VarChar(3)
+  paidOn           DateTime            @map("paid_on") @db.Date
+  method           String
+  bankReference    String?             @map("bank_reference")
+  reversesRefundId String?             @unique @map("reverses_refund_id") @db.Uuid
+  reversalReason   String?             @map("reversal_reason")
+  recordedById     String?             @map("recorded_by_id") @db.Uuid
+  createdAt        DateTime            @default(now()) @map("created_at") @db.Timestamptz(3)
+  settlement       CandidateSettlement @relation(fields: [settlementId], references: [id])
+  reverses         CandidateRefund?    @relation("RefundReversal", fields: [reversesRefundId], references: [id])
+  reversal         CandidateRefund?    @relation("RefundReversal")
+
+  @@index([settlementId])
+  @@index([paidOn])
+  @@map("candidate_refund")
+}
+
+model ApprovalAction {
+  id            String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  entityType    String        @map("entity_type")
+  entityId      String        @map("entity_id") @db.Uuid
+  action        String
+  decision      RequestStatus @default(PENDING)
+  reason        String?
+  requestedById String?       @map("requested_by_id") @db.Uuid
+  requestedAt   DateTime      @default(now()) @map("requested_at") @db.Timestamptz(3)
+  decidedById   String?       @map("decided_by_id") @db.Uuid
+  decidedAt     DateTime?     @map("decided_at") @db.Timestamptz(3)
+
+  @@index([entityType, entityId])
+  @@map("approval_action")
+}

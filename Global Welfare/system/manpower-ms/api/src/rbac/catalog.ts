@@ -1,0 +1,80 @@
+export const PERMISSIONS = [
+  { code: 'dashboard.ceo', description: 'View the CEO dashboard' },
+  { code: 'catalogue.read', description: 'View countries, cities, jobs, employers and demands' },
+  { code: 'catalogue.manage', description: 'Manage recruitment setup and catalogue records' },
+  { code: 'catalogue.eligibility.manage', description: 'Set country recruitment eligibility' },
+  { code: 'catalogue.approve', description: 'Approve job position price changes' },
+  { code: 'candidate.read', description: 'View candidates' },
+  { code: 'candidate.create', description: 'Register candidates' },
+  { code: 'candidate.update', description: 'Edit candidate details' },
+  { code: 'passport.lookup', description: 'Look up a passport number' },
+  { code: 'passport.view_number', description: 'View a full passport number' },
+  { code: 'application.read', description: 'View applications' },
+  { code: 'application.create', description: 'Create applications' },
+  { code: 'application.update', description: 'Edit applications' },
+  { code: 'application.source_change_request', description: 'Request a source or agent change' },
+  { code: 'application.source_change_approve', description: 'Approve a source or agent change' },
+  { code: 'application.close_review', description: 'Review and approve application closure' },
+  { code: 'interview.manage', description: 'Schedule interviews and record results' },
+  { code: 'processing.manage', description: 'Manage processing tasks and documents' },
+  { code: 'custody.manage', description: 'Record passport custody' },
+  { code: 'medical.read', description: 'View medical records' },
+  { code: 'medical.manage', description: 'Record medical results' },
+  { code: 'finance.receipt.read', description: 'View candidate receipts' },
+  { code: 'finance.receipt.record', description: 'Record candidate receipts' },
+  { code: 'finance.expense.read', description: 'View company expenses' },
+  { code: 'finance.expense.record', description: 'Record company expenses' },
+  { code: 'finance.commission.manage', description: 'Prepare agent commissions and payouts' },
+  { code: 'finance.commission.approve', description: 'Approve agent commissions' },
+  { code: 'finance.settlement.prepare', description: 'Prepare settlements and refunds' },
+  { code: 'finance.settlement.approve', description: 'Approve settlements and refunds' },
+  { code: 'ledger.read', description: 'View the ledger' },
+  { code: 'ledger.post', description: 'Post journal entries' },
+  { code: 'report.finance', description: 'View finance reports' },
+  { code: 'export.run', description: 'Export data to Excel' },
+  { code: 'audit.read', description: 'View the audit log' },
+  { code: 'admin.roles.assign_business', description: 'Assign business roles to users' },
+  { code: 'admin.users.manage', description: 'Create and disable user accounts' },
+  { code: 'admin.system', description: 'Technical settings' },
+] as const;
+
+const all = PERMISSIONS.map((p) => p.code as string);
+const business = all.filter((c) => c !== 'admin.users.manage' && c !== 'admin.system');
+
+export const ROLES: { code: string; name: string; description: string; permissions: string[] }[] = [
+  { code: 'CEO', name: 'CEO', description: 'Full business visibility and approvals', permissions: business },
+  {
+    code: 'CEO_ADMIN', name: 'CEO administration', description: 'Manages recruitment setup records and candidate intake',
+    permissions: ['catalogue.read', 'catalogue.manage', 'candidate.read', 'application.read'],
+  },
+  {
+    code: 'FINANCE_MANAGER', name: 'Finance manager', description: 'Reviews and approves finance items',
+    permissions: ['finance.receipt.read', 'finance.expense.read', 'finance.commission.approve',
+      'finance.settlement.approve', 'ledger.read', 'ledger.post', 'report.finance', 'export.run',
+      'application.read', 'candidate.read'],
+  },
+  {
+    code: 'FINANCE_OFFICER', name: 'Finance officer', description: 'Records receipts, expenses and payouts',
+    permissions: ['finance.receipt.read', 'finance.receipt.record', 'finance.expense.read',
+      'finance.expense.record', 'finance.commission.manage', 'finance.settlement.prepare',
+      'ledger.read', 'application.read', 'candidate.read'],
+  },
+  {
+    code: 'RECRUITMENT_OFFICER', name: 'Recruitment officer', description: 'Interviews and employer selection',
+    permissions: ['candidate.read', 'application.read', 'application.update', 'interview.manage', 'catalogue.read'],
+  },
+  {
+    code: 'PROCESSING_OFFICER', name: 'Processing officer', description: 'Documents, medical, visa and custody',
+    permissions: ['candidate.read', 'application.read', 'processing.manage', 'custody.manage',
+      'medical.read', 'medical.manage', 'catalogue.read'],
+  },
+  {
+    code: 'DATA_ENTRY', name: 'Data entry officer', description: 'Registers candidates and applications',
+    permissions: ['candidate.create', 'candidate.read', 'candidate.update', 'passport.lookup',
+      'application.create', 'application.read', 'application.source_change_request', 'catalogue.read'],
+  },
+  {
+    code: 'TECH_ADMIN', name: 'Technical administrator', description: 'Accounts and technical settings only',
+    permissions: ['admin.users.manage', 'admin.system'],
+  },
+];

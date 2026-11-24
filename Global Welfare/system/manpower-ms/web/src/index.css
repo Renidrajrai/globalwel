@@ -1,0 +1,99 @@
+/* Hallmark · checked: 2026-11-23 · genre: modern-minimal (inferred)
+ * floor: 0 FAIL · fixed: 11 (19, 20, 48) · structural: 0 printed
+ * built: the project · redesign: polish · v2.0.0 */
+@import "tailwindcss";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+  --font-sans: "Geist Variable", ui-sans-serif, system-ui, sans-serif;
+  --ease-weighted: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+:root {
+  --bg: #ffffff;
+  --surface: #f5f5f5;
+  --line: #e4e4e4;
+  --fg: #171717;
+  --muted: #666666;
+  --primary: #171717;
+  --on-primary: #ffffff;
+  --danger: #b42318;
+  --dark-bg: #181818;
+  --dark-surface: #1f1f1f;
+  --dark-line: #313131;
+  --dark-fg: #f2f2f2;
+  --dark-muted: #a3a3a3;
+  --dark-primary: #ffffff;
+  --dark-on-primary: #181818;
+  --dark-danger: #f97066;
+}
+
+.dark {
+  --bg: var(--dark-bg);
+  --surface: var(--dark-surface);
+  --line: var(--dark-line);
+  --fg: var(--dark-fg);
+  --muted: var(--dark-muted);
+  --primary: var(--dark-primary);
+  --on-primary: var(--dark-on-primary);
+  --danger: var(--dark-danger);
+}
+
+@theme inline {
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-line: var(--line);
+  --color-fg: var(--fg);
+  --color-muted: var(--muted);
+  --color-primary: var(--primary);
+  --color-on-primary: var(--on-primary);
+  --color-danger: var(--danger);
+}
+
+@layer base {
+  html, body { overflow-x: clip; }
+  body { @apply bg-bg text-fg antialiased; }
+  h1, h2, h3 { text-wrap: balance; }
+  p { text-wrap: pretty; }
+}
+
+@utility heading-1 { @apply text-6xl font-semibold; }
+@utility heading-2 { @apply text-5xl font-semibold; }
+@utility heading-3 { @apply text-4xl font-semibold; }
+@utility heading-4 { @apply text-3xl font-semibold; }
+@utility heading-5 { @apply text-2xl font-semibold; }
+@utility heading-6 { @apply text-xl font-semibold; }
+@utility title-1 { @apply text-xl font-medium; }
+@utility title-2 { @apply text-lg font-medium; }
+@utility title-3 { @apply text-base font-medium; }
+@utility title-4 { @apply text-sm font-medium; }
+@utility title-5 { @apply text-xs font-medium; }
+@utility body-1 { @apply text-base font-semibold; }
+@utility body-2 { @apply text-base font-medium; }
+@utility body-3 { @apply text-base font-normal; }
+@utility body-4 { @apply text-sm font-semibold; }
+@utility body-5 { @apply text-sm font-medium; }
+@utility body-6 { @apply text-sm font-normal; }
+@utility button-lg { @apply text-lg font-semibold; }
+@utility button-md { @apply text-base font-semibold; }
+@utility button-sm { @apply text-sm font-semibold; }
+@utility button-xsm { @apply text-xs font-semibold; }
+@utility caption-1 { @apply text-sm font-medium; }
+@utility caption-2 { @apply text-sm font-normal; }
+@utility caption-3 { @apply text-xs font-semibold; }
+@utility caption-4 { @apply text-xs font-medium; }
+@utility caption-5 { @apply text-xs font-normal; }
+
+@keyframes rise {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+.rise { animation: rise 500ms cubic-bezier(0.22, 1, 0.36, 1) both; }
+@media (prefers-reduced-motion: reduce) {
+  .rise { animation: fade 300ms cubic-bezier(0.22, 1, 0.36, 1) both; }
+}
