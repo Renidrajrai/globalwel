@@ -107,67 +107,100 @@ enum ApprovalStatus {
   PENDING_APPROVAL
   APPROVED
   REJECTED
+
   @@map("approval_status")
 }
+
 enum RequestStatus {
   PENDING
   APPROVED
   REJECTED
+
   @@map("request_status")
 }
+
 enum EligibilityStatus {
   NOT_REVIEWED
   APPROVED
   SUSPENDED
+
   @@map("eligibility_status")
 }
+
+enum BusinessRegion {
+  EUROPE
+  GULF
+
+  @@map("business_region")
+}
+
+enum SelectionDocumentStatus {
+  PENDING
+  DONE
+
+  @@map("selection_document_status")
+}
+
 enum SourceType {
   DIRECT
   REFERRED
   UNKNOWN
+
   @@map("source_type")
 }
+
 enum LifecycleStatus {
   ACTIVE
   ON_HOLD
   STOPPED_PENDING_SETTLEMENT
   CLOSED_SUCCESSFULLY
   CLOSED_UNSUCCESSFULLY
+
   @@map("lifecycle_status")
 }
+
 enum PayerType {
   CANDIDATE
   EMPLOYER
   COMPANY
+
   @@map("payer_type")
 }
+
 enum SettlementStatus {
   DRAFT
   PENDING_APPROVAL
   APPROVED
   SUPERSEDED
+
   @@map("settlement_status")
 }
+
 enum SettlementLineType {
   EXPENSE
   ADJUSTMENT
+
   @@map("settlement_line_type")
 }
 
 model Country {
-  id                      String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  iso2Code                String            @unique @map("iso2_code") @db.Char(2)
-  iso3Code                String?           @unique @map("iso3_code") @db.Char(3)
+  id                      String                       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  iso2Code                String                       @unique @map("iso2_code") @db.Char(2)
+  iso3Code                String?                      @unique @map("iso3_code") @db.Char(3)
   name                    String
-  active                  Boolean           @default(true)
-  eligibility             EligibilityStatus @default(NOT_REVIEWED)
-  eligibilitySource       String?           @map("eligibility_source")
-  eligibilityVerifiedAt   DateTime?         @map("eligibility_verified_at") @db.Timestamptz(3)
-  eligibilityVerifiedById String?           @map("eligibility_verified_by_id") @db.Uuid
-  approvalStatus          ApprovalStatus    @default(DRAFT) @map("approval_status")
-  createdAt               DateTime          @default(now()) @map("created_at") @db.Timestamptz(3)
+  region                  BusinessRegion?              @map("business_region")
+  displayOrder            Int                          @default(0) @map("display_order")
+  active                  Boolean                      @default(true)
+  eligibility             EligibilityStatus            @default(NOT_REVIEWED)
+  eligibilitySource       String?                      @map("eligibility_source")
+  eligibilityVerifiedAt   DateTime?                    @map("eligibility_verified_at") @db.Timestamptz(3)
+  eligibilityVerifiedById String?                      @map("eligibility_verified_by_id") @db.Uuid
+  approvalStatus          ApprovalStatus               @default(DRAFT) @map("approval_status")
+  createdAt               DateTime                     @default(now()) @map("created_at") @db.Timestamptz(3)
   cities                  City[]
   employers               Employer[]
+  overseasAgencies        OverseasAgency[]
+  employerDestinations    EmployerDestinationCountry[]
   demands                 JobDemand[]
 
   @@map("country")
@@ -195,41 +228,101 @@ model JobTitle {
   description     String?
   active          Boolean       @default(true)
   positions       JobPosition[]
+  employers       EmployerJobTitle[]
 
   @@map("job_title")
 }
 
 model Employer {
-  id                  String      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  registeredCountryId String      @map("registered_country_id") @db.Uuid
-  legalName           String      @map("legal_name")
-  reference           String?
-  contactName         String?     @map("contact_name")
-  email               String?
-  phone               String?
-  verificationStatus  String      @default("UNVERIFIED") @map("verification_status")
-  active              Boolean     @default(true)
-  createdAt           DateTime    @default(now()) @map("created_at") @db.Timestamptz(3)
-  registeredCountry   Country     @relation(fields: [registeredCountryId], references: [id])
-  demands             JobDemand[]
+  id                   String                       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  registeredCountryId  String                       @map("registered_country_id") @db.Uuid
+  legalName            String                       @map("legal_name")
+  reference            String?
+  contactName          String?                      @map("contact_name")
+  email                String?
+  phone                String?
+  verificationStatus   String                       @default("UNVERIFIED") @map("verification_status")
+  active               Boolean                      @default(true)
+  createdAt            DateTime                     @default(now()) @map("created_at") @db.Timestamptz(3)
+  registeredCountry    Country                      @relation(fields: [registeredCountryId], references: [id])
+  overseasAgencies     EmployerOverseasAgency[]
+  jobTitles            EmployerJobTitle[]
+  destinationCountries EmployerDestinationCountry[]
+  demands              JobDemand[]
 
   @@map("employer")
 }
 
+model EmployerJobTitle {
+  employerId String   @map("employer_id") @db.Uuid
+  jobTitleId String   @map("job_title_id") @db.Uuid
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  employer   Employer @relation(fields: [employerId], references: [id])
+  jobTitle   JobTitle @relation(fields: [jobTitleId], references: [id])
+
+  @@id([employerId, jobTitleId])
+  @@index([jobTitleId])
+  @@map("employer_job_title")
+}
+
+model EmployerDestinationCountry {
+  employerId String   @map("employer_id") @db.Uuid
+  countryId  String   @map("country_id") @db.Uuid
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  employer   Employer @relation(fields: [employerId], references: [id])
+  country    Country  @relation(fields: [countryId], references: [id])
+
+  @@id([employerId, countryId])
+  @@index([countryId])
+  @@map("employer_destination_country")
+}
+
+model OverseasAgency {
+  id          String                   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  countryId   String                   @map("country_id") @db.Uuid
+  name        String
+  contactName String?                  @map("contact_name")
+  phone       String?
+  email       String?
+  notes       String?
+  active      Boolean                  @default(true)
+  createdAt   DateTime                 @default(now()) @map("created_at") @db.Timestamptz(3)
+  country     Country                  @relation(fields: [countryId], references: [id])
+  employers   EmployerOverseasAgency[]
+  demands     JobDemand[]
+
+  @@index([countryId, active])
+  @@map("overseas_agency")
+}
+
+model EmployerOverseasAgency {
+  employerId       String         @map("employer_id") @db.Uuid
+  overseasAgencyId String         @map("overseas_agency_id") @db.Uuid
+  createdAt        DateTime       @default(now()) @map("created_at") @db.Timestamptz(3)
+  employer         Employer       @relation(fields: [employerId], references: [id])
+  overseasAgency   OverseasAgency @relation(fields: [overseasAgencyId], references: [id])
+
+  @@id([employerId, overseasAgencyId])
+  @@index([overseasAgencyId])
+  @@map("employer_overseas_agency")
+}
+
 model JobDemand {
-  id                   String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  employerId           String         @map("employer_id") @db.Uuid
-  destinationCountryId String         @map("destination_country_id") @db.Uuid
-  reference            String         @unique
-  feimsReference       String?        @map("feims_reference")
-  approvalStatus       ApprovalStatus @default(DRAFT) @map("approval_status")
-  approvedAt           DateTime?      @map("approved_at") @db.Timestamptz(3)
-  approvedById         String?        @map("approved_by_id") @db.Uuid
-  expiresOn            DateTime?      @map("expires_on") @db.Date
-  active               Boolean        @default(true)
-  createdAt            DateTime       @default(now()) @map("created_at") @db.Timestamptz(3)
-  employer             Employer       @relation(fields: [employerId], references: [id])
-  destinationCountry   Country        @relation(fields: [destinationCountryId], references: [id])
+  id                   String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  employerId           String          @map("employer_id") @db.Uuid
+  destinationCountryId String          @map("destination_country_id") @db.Uuid
+  overseasAgencyId     String?         @map("overseas_agency_id") @db.Uuid
+  reference            String          @unique
+  feimsReference       String?         @map("feims_reference")
+  approvalStatus       ApprovalStatus  @default(DRAFT) @map("approval_status")
+  approvedAt           DateTime?       @map("approved_at") @db.Timestamptz(3)
+  approvedById         String?         @map("approved_by_id") @db.Uuid
+  expiresOn            DateTime?       @map("expires_on") @db.Date
+  active               Boolean         @default(true)
+  createdAt            DateTime        @default(now()) @map("created_at") @db.Timestamptz(3)
+  employer             Employer        @relation(fields: [employerId], references: [id])
+  overseasAgency       OverseasAgency? @relation(fields: [overseasAgencyId], references: [id])
+  destinationCountry   Country         @relation(fields: [destinationCountryId], references: [id])
   positions            JobPosition[]
 
   @@unique([id, destinationCountryId])
@@ -240,7 +333,7 @@ model JobPosition {
   id                   String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   demandId             String            @map("demand_id") @db.Uuid
   destinationCountryId String            @map("destination_country_id") @db.Uuid
-  cityId               String            @map("city_id") @db.Uuid
+  cityId               String?           @map("city_id") @db.Uuid
   jobTitleId           String            @map("job_title_id") @db.Uuid
   vacancies            Int
   salaryAmount         Decimal?          @map("salary_amount") @db.Decimal(14, 2)
@@ -249,7 +342,7 @@ model JobPosition {
   active               Boolean           @default(true)
   createdAt            DateTime          @default(now()) @map("created_at") @db.Timestamptz(3)
   demand               JobDemand         @relation(fields: [demandId, destinationCountryId], references: [id, destinationCountryId])
-  city                 City              @relation(fields: [cityId, destinationCountryId], references: [id, countryId])
+  city                 City?             @relation(fields: [cityId, destinationCountryId], references: [id, countryId])
   jobTitle             JobTitle          @relation(fields: [jobTitleId], references: [id])
   priceVersions        JobPriceVersion[]
   applications         Application[]
@@ -302,13 +395,17 @@ model Candidate {
   altPhoneDigits String?             @map("alt_phone_digits")
   email          String?
   address        String?
+  nextOfKin      String?             @map("next_of_kin")
+  referId        String?             @map("refer_id") @db.Uuid
   createdById    String?             @map("created_by_id") @db.Uuid
   createdAt      DateTime            @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt      DateTime            @updatedAt @map("updated_at") @db.Timestamptz(3)
   applications   Application[]
   passports      CandidatePassport[]
+  refer          ReferralPartner?    @relation("CandidateRefer", fields: [referId], references: [id])
 
   @@index([nameNormalized, dateOfBirth])
+  @@index([referId])
   @@map("candidate")
 }
 
@@ -339,6 +436,8 @@ model ReferralPartner {
   active             Boolean                   @default(true)
   createdAt          DateTime                  @default(now()) @map("created_at") @db.Timestamptz(3)
   applications       Application[]
+  referredCandidates Candidate[]               @relation("CandidateRefer")
+  notes              String?
   sourceChanges      ApplicationSourceChange[]
   commissions        PartnerCommission[]
 
@@ -362,6 +461,11 @@ model Application {
   assignedToId         String?                     @map("assigned_to_id") @db.Uuid
   openedAt             DateTime                    @default(now()) @map("opened_at") @db.Timestamptz(3)
   closedAt             DateTime?                   @map("closed_at") @db.Timestamptz(3)
+  selectedAt           DateTime?                   @map("selected_at") @db.Timestamptz(3)
+  photoStatus          SelectionDocumentStatus?    @map("photo_status")
+  pccStatus            SelectionDocumentStatus?    @map("pcc_status")
+  medicalStatus        SelectionDocumentStatus?    @map("medical_status")
+  selectionRemarks     String?                     @map("selection_remarks")
   candidate            Candidate                   @relation(fields: [candidateId], references: [id])
   position             JobPosition?                @relation(fields: [positionId], references: [id])
   priceVersion         JobPriceVersion?            @relation(fields: [positionId, priceVersionId], references: [positionId, id])
@@ -378,6 +482,7 @@ model Application {
   @@unique([id, referralPartnerId])
   @@index([candidateId])
   @@index([positionId])
+  @@index([selectedAt])
   @@index([lifecycleStatus])
   @@map("application")
 }
@@ -606,20 +711,20 @@ model CommissionPayment {
 }
 
 model CandidateSettlement {
-  id                     String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  applicationId          String           @map("application_id") @db.Uuid
-  revisionNo             Int              @map("revision_no")
-  stopReason             String           @map("stop_reason")
-  status                 SettlementStatus @default(DRAFT)
-  currency               String           @db.VarChar(3)
-  receivedTotalSnapshot  Decimal          @map("received_total_snapshot") @db.Decimal(14, 2)
-  approvedRetentionTotal Decimal          @default(0) @map("approved_retention_total") @db.Decimal(14, 2)
-  refundDue              Decimal          @default(0) @map("refund_due") @db.Decimal(14, 2)
-  preparedById           String?          @map("prepared_by_id") @db.Uuid
-  approvedById           String?          @map("approved_by_id") @db.Uuid
-  approvedAt             DateTime?        @map("approved_at") @db.Timestamptz(3)
-  createdAt              DateTime         @default(now()) @map("created_at") @db.Timestamptz(3)
-  application            Application      @relation(fields: [applicationId], references: [id])
+  id                     String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  applicationId          String            @map("application_id") @db.Uuid
+  revisionNo             Int               @map("revision_no")
+  stopReason             String            @map("stop_reason")
+  status                 SettlementStatus  @default(DRAFT)
+  currency               String            @db.VarChar(3)
+  receivedTotalSnapshot  Decimal           @map("received_total_snapshot") @db.Decimal(14, 2)
+  approvedRetentionTotal Decimal           @default(0) @map("approved_retention_total") @db.Decimal(14, 2)
+  refundDue              Decimal           @default(0) @map("refund_due") @db.Decimal(14, 2)
+  preparedById           String?           @map("prepared_by_id") @db.Uuid
+  approvedById           String?           @map("approved_by_id") @db.Uuid
+  approvedAt             DateTime?         @map("approved_at") @db.Timestamptz(3)
+  createdAt              DateTime          @default(now()) @map("created_at") @db.Timestamptz(3)
+  application            Application       @relation(fields: [applicationId], references: [id])
   lines                  SettlementLine[]
   refunds                CandidateRefund[]
 

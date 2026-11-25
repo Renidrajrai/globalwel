@@ -171,7 +171,7 @@ export function ReasonDialog({
 export type FieldDef = {
   name: string;
   label: string;
-  type?: 'text' | 'number' | 'date' | 'select' | 'textarea' | 'boolean' | 'password';
+  type?: 'text' | 'number' | 'date' | 'select' | 'textarea' | 'boolean' | 'password' | 'hidden';
   required?: boolean;
   placeholder?: string;
   options?: { value: string; label: string }[];
@@ -203,6 +203,8 @@ function FieldControl({
   const id = 'field-' + field.name;
   const optionsResource = field.optionsResource;
   const { data: optionRows } = useResource<any>(optionsResource?.resource ?? '', optionsResource?.params, 1, 200);
+
+  if (field.type === 'hidden') return <input id={id} type="hidden" value={String(value)} readOnly />;
 
   if (field.type === 'boolean') {
     return (

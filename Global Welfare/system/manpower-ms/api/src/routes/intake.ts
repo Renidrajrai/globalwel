@@ -7,7 +7,7 @@ import { requirePermission } from '../auth/middleware';
 import { HttpError } from '../lib/http';
 import { h, parse, actorId, A } from '../lib/routeKit';
 import {
-  passportHmac, encryptPassport, passportStatus, passportNumberProblem, passportDateProblems, PASSPORT_KEY_VERSION,
+  passportHmac, encryptPassport, decryptPassport, passportStatus, passportNumberProblem, passportDateProblems, normalizePassport, PASSPORT_KEY_VERSION,
 } from '../lib/passport';
 import { dateKey, isRealDate, toDateOnly, todayKathmandu } from '../lib/dates';
 import { availablePositionWhere, currentPriceWhere, priceFrom, resolvePositionPrice } from '../lib/catalogueRules';
@@ -54,6 +54,7 @@ const candidateSchema = z.object({
   altPhone: z.preprocess(blankToNull, z.string().trim().max(30).nullish()),
   email: z.preprocess(blankToNull, z.string().trim().email('Enter a valid email').nullish()),
   address: z.preprocess(blankToNull, z.string().trim().max(500).nullish()),
+  referId: z.preprocess(blankToNull, z.string().uuid().nullish()),
 });
 const passportSchema = z.object({
   passportNumber: z.string().trim().min(1, 'Passport number is required').max(30),
@@ -106,11 +107,18 @@ async function createApplication(
   holdReason: string | null,
 ) {
   checkSource(a);
+  if (a.positionId) {
+    await tx.$queryRaw`SELECT id FROM candidate WHERE id = ${a.candidateId}::uuid FOR UPDATE`;
+    if (await tx.application.findFirst({ where: { candidateId: a.candidateId, positionId: a.positionId }, select: { id: true } }))
+      throw new HttpError(409, 'This applicant already has an application for this position.');
+  }
   if (a.referralPartnerId) {
     const p = await tx.referralPartner.findUnique({ where: { id: a.referralPartnerId } });
     if (!p || p.active === false) throw new HttpError(400, 'Referral partner not found or inactive', { referralPartnerId: 'Not available.' });
   }
   const price = a.positionId ? await resolvePositionPrice(tx, a.positionId) : null;
+  if (price && await tx.application.count({ where: { positionId: price.pos.id, selectedAt: { not: null } } }) >= price.pos.vacancies)
+    throw new HttpError(409, 'This position has no vacancies remaining.');
 
   const status = holdReason ? 'ON_HOLD' : 'ACTIVE';
   const code = await nextCode(tx, 'application_code_seq', 'APP');
@@ -157,7 +165,7 @@ intakeRouter.post('/passport-lookup', lookupLimiter, requirePermission('passport
 
   const p = await prisma.candidatePassport.findUnique({
     where: { passportLookupHmac: passportHmac(body.passportNumber, country.iso2Code) },
-    include: { candidate: { select: { id: true, fullName: true, candidateCode: true, phone: true } } },
+    include: { candidate: { select: { id: true, fullName: true, candidateCode: true, phone: true, referId: true, refer: { select: { name: true } } } } },
   });
   await A(req, 'PASSPORT_LOOKUP', 'candidate_passport', p?.id ?? null, { found: !!p });
   if (!p) return res.json({ data: { found: false } });
@@ -170,29 +178,47 @@ intakeRouter.post('/passport-lookup', lookupLimiter, requirePermission('passport
     candidateId: p.candidate.id,
     fullName: p.candidate.fullName,
     candidateCode: p.candidate.candidateCode,
+    referId: p.candidate.referId,
+    referName: p.candidate.refer?.name ?? null,
     passportStatus: passportStatus(p.expiryDate, p.isCurrent),
     openApplications,
   } });
+}));
+
+intakeRouter.post('/applications/passport-search', requirePermission('application.read', 'passport.lookup'), h(async (req, res) => {
+  const body = parse(z.object({ passportNumber: z.string().trim().min(1).max(30) }), req.body);
+  const problem = passportNumberProblem(body.passportNumber, null);
+  if (problem) throw new HttpError(400, problem, { passportNumber: problem });
+  const countries = await prisma.country.findMany({ select: { iso2Code: true } });
+  const hashes = countries.map(({ iso2Code }) => passportHmac(normalizePassport(body.passportNumber), iso2Code));
+  const rows = await prisma.application.findMany({
+    where: { candidate: { passports: { some: { passportLookupHmac: { in: hashes } } } } },
+    orderBy: { openedAt: 'desc' }, take: 50,
+    include: { candidate: { select: { id: true, fullName: true, candidateCode: true } }, position: { include: { jobTitle: true, demand: { include: { employer: true, destinationCountry: true } } } } },
+  });
+  await A(req, 'APPLICATION_SEARCH_BY_PASSPORT', 'application', null, { resultCount: rows.length });
+  res.json({ data: rows.map(({ id, code, lifecycleStatus, candidate, position }) => ({ id, code, lifecycleStatus, candidate, position })) });
 }));
 
 intakeRouter.get('/positions', requirePermission('application.create'), h(async (_req, res) => {
   const rows = await prisma.jobPosition.findMany({
     where: availablePositionWhere(),
     include: {
-      jobTitle: true, city: true,
+      jobTitle: true, applications: { where: { selectedAt: { not: null } }, select: { id: true } },
       demand: { include: { employer: true, destinationCountry: true } },
       priceVersions: { where: currentPriceWhere(), orderBy: { effectiveFrom: 'desc' }, take: 1, include: { components: true } },
     },
     take: 500,
   });
-  res.json({ data: rows.filter((r) => r.priceVersions.length).map((r) => {
+  res.json({ data: rows.filter((r) => r.priceVersions.length && r.vacancies > r.applications.length).map((r) => {
     const pv = r.priceVersions[0];
     const { agreed, packageTotal } = priceFrom(pv.components);
     return {
       id: r.id,
-      label: `${r.demand.destinationCountry.name} / ${r.city.name} / ${r.jobTitle.title}`,
+      label: `${r.jobTitle.title} · ${r.demand.destinationCountry.name} · ${r.demand.reference}`,
       employer: r.demand.employer.legalName,
-      vacancies: r.vacancies,
+      vacancies: r.vacancies - r.applications.length,
+      requested: r.vacancies,
       currency: pv.currency,
       agreedAmount: agreed.toString(),
       packageTotal: packageTotal.toString(),
@@ -210,9 +236,19 @@ intakeRouter.post('/duplicate-check', requirePermission('candidate.create'), h(a
 }));
 
 intakeRouter.post('/applicant', requirePermission('candidate.create', 'application.create'), h(async (req, res) => {
+  const selectionSchema = sourceSchema.extend({
+    positionIds: z.array(z.string().uuid()).min(1).max(20).optional(),
+    positionId: z.preprocess(blankToNull, z.string().uuid().nullish()),
+    assignedToId: z.preprocess(blankToNull, z.string().uuid().nullish()),
+  });
   const body = parse(z.object({
-    candidate: candidateSchema, passport: passportSchema.nullish(), application: appSchema,
+    candidate: candidateSchema, passport: passportSchema.nullish(), application: selectionSchema,
   }), req.body);
+  const positionIds = body.application.positionIds ?? (body.application.positionId ? [body.application.positionId] : []);
+  if (!positionIds.length || new Set(positionIds).size !== positionIds.length)
+    throw new HttpError(400, 'Select one or more different positions.', { 'application.positionIds': 'Select at least one unique position.' });
+  if ((body.candidate.referId ?? null) !== (body.application.referralPartnerId ?? null))
+    throw new HttpError(400, 'Select the same Refer source for the applicant and application.', { 'candidate.referId': 'Applicant and application Refer values must match.' });
   const actor = actorId(req);
 
   let country: { id: string; iso2Code: string } | null = null;
@@ -222,6 +258,10 @@ intakeRouter.post('/applicant', requirePermission('candidate.create', 'applicati
     hmac = passportHmac(body.passport.passportNumber, country.iso2Code);
     if (await prisma.candidatePassport.findUnique({ where: { passportLookupHmac: hmac } }))
       throw new HttpError(409, 'Passport already registered. Run the passport lookup and use the existing candidate.', { 'passport.passportNumber': 'Already registered.' });
+  }
+  if (body.candidate.referId) {
+    const refer = await prisma.referralPartner.findUnique({ where: { id: body.candidate.referId } });
+    if (!refer?.active) throw new HttpError(400, 'Select an active Refer source.', { 'candidate.referId': 'Refer is unavailable.' });
   }
 
   try {
@@ -233,6 +273,7 @@ intakeRouter.post('/applicant', requirePermission('candidate.create', 'applicati
         nameNormalized: norm(c.fullName),
         dateOfBirth: c.dateOfBirth ? toDateOnly(c.dateOfBirth) : null,
         phone: c.phone, altPhone: c.altPhone ?? null, email: c.email ?? null, address: c.address ?? null,
+        referId: c.referId ?? null,
         createdById: actor,
       } });
       if (body.passport && hmac && country) {
@@ -247,11 +288,12 @@ intakeRouter.post('/applicant', requirePermission('candidate.create', 'applicati
           isCurrent: true, createdById: actor,
         } });
       }
-      const app = await createApplication(tx, { candidateId: cand.id, ...body.application }, actor, body.passport ? null : NO_PASSPORT_HOLD);
-      return { cand, app };
+      const apps = [];
+      for (const positionId of positionIds) apps.push(await createApplication(tx, { candidateId: cand.id, ...body.application, positionId }, actor, body.passport ? null : NO_PASSPORT_HOLD));
+      return { cand, apps };
     }, { timeout: 15_000 });
 
-    await A(req, 'INTAKE_CREATED', 'application', out.app.id, { candidateId: out.cand.id, hasPassport: !!body.passport, hasPosition: !!body.application.positionId });
+    await A(req, 'INTAKE_CREATED', 'candidate', out.cand.id, { applicationCount: out.apps.length, hasPassport: !!body.passport });
 
     const warnings: string[] = [];
     if (!body.passport) warnings.push('No passport entered. The application is ON HOLD until a passport is added.');
@@ -259,11 +301,10 @@ intakeRouter.post('/applicant', requirePermission('candidate.create', 'applicati
       const days = (toDateOnly(body.passport.expiryDate).getTime() - Date.now()) / 86_400_000;
       if (days < PASSPORT_WARN_DAYS) warnings.push(`Passport expires in ${Math.max(0, Math.floor(days))} days`);
     }
-    if (!body.application.positionId) warnings.push('No position selected yet. Assign one when the catalogue is available.');
     res.status(201).json({ data: {
       candidateId: out.cand.id, candidateCode: out.cand.candidateCode,
-      applicationId: out.app.id, applicationCode: out.app.code,
-      lifecycleStatus: out.app.lifecycleStatus, warnings,
+      applications: out.apps.map((app) => ({ id: app.id, code: app.code, lifecycleStatus: app.lifecycleStatus })),
+      warnings,
     } });
   } catch (e: any) {
     if (e?.code === 'P2002' && String(e?.meta?.target ?? '').includes('passport'))
@@ -286,6 +327,48 @@ intakeRouter.post('/application', requirePermission('application.create'), h(asy
   res.status(201).json({ data: { candidateId: cand.id, applicationId: app.id, applicationCode: app.code, lifecycleStatus: app.lifecycleStatus, warnings } });
 }));
 
+intakeRouter.post('/applications', requirePermission('application.create'), h(async (req, res) => {
+  const body = parse(sourceSchema.extend({ candidateId: z.string().uuid(), positionIds: z.array(z.string().uuid()).min(1).max(20) }), req.body);
+  if (new Set(body.positionIds).size !== body.positionIds.length) throw new HttpError(400, 'Choose each position only once.');
+  const candidate = await prisma.candidate.findUnique({ where: { id: body.candidateId }, select: { id: true } });
+  if (!candidate) throw new HttpError(404, 'Candidate not found.');
+  const hold = await hasCurrentPassport(prisma, candidate.id) ? null : NO_PASSPORT_HOLD;
+  const applications = await prisma.$transaction(async (tx) => {
+    const created = [];
+    for (const positionId of body.positionIds) created.push(await createApplication(tx, { ...body, positionId, assignedToId: null }, actorId(req), hold));
+    return created;
+  }, { timeout: 15_000, isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+  await A(req, 'APPLICATIONS_CREATED', 'candidate', candidate.id, { applicationCount: applications.length });
+  res.status(201).json({ data: { candidateId: candidate.id, applications: applications.map(({ id, code, lifecycleStatus }) => ({ id, code, lifecycleStatus })) } });
+}));
+
+intakeRouter.patch('/applications/:id/selection', requirePermission('selection.manage'), h(async (req, res) => {
+  const body = parse(z.object({
+    selectedAt: z.preprocess(blankToNull, z.string().refine(isRealDate, 'Enter a valid selection date.').nullish()),
+    photoStatus: z.enum(['PENDING', 'DONE']).nullish(), pccStatus: z.enum(['PENDING', 'DONE']).nullish(),
+    medicalStatus: z.enum(['PENDING', 'DONE']).nullish(), remarks: z.preprocess(blankToNull, z.string().trim().max(2000).nullish()),
+  }), req.body);
+  const application = await prisma.application.findUnique({ where: { id: req.params.id }, include: { position: true } });
+  if (!application) throw new HttpError(404, 'Application not found.');
+  if (!application.positionId || !application.position) throw new HttpError(409, 'Assign this applicant to a demand position before selecting them.');
+  const selectedAt = body.selectedAt ? new Date(`${body.selectedAt}T00:00:00+05:45`) : null;
+  const row = await prisma.$transaction(async (tx) => {
+    await tx.$queryRaw`SELECT id FROM job_position WHERE id = ${application.positionId}::uuid FOR UPDATE`;
+    if (selectedAt && !application.selectedAt) {
+      const current = await tx.application.count({ where: { positionId: application.positionId, selectedAt: { not: null } } });
+      if (current >= application.position!.vacancies) throw new HttpError(409, 'All vacancies for this position are filled.');
+    }
+    return tx.application.update({ where: { id: application.id }, data: {
+      selectedAt, photoStatus: selectedAt ? body.photoStatus ?? 'PENDING' : null,
+      pccStatus: selectedAt ? body.pccStatus ?? 'PENDING' : null,
+      medicalStatus: selectedAt ? body.medicalStatus ?? 'PENDING' : null,
+      selectionRemarks: selectedAt ? body.remarks ?? null : null,
+    } });
+  }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+  await A(req, selectedAt ? 'APPLICANT_SELECTED_FOR_DEMAND' : 'APPLICANT_REMOVED_FROM_SELECTION', 'application', row.id, { positionId: application.positionId });
+  res.json({ data: { selectedAt: row.selectedAt } });
+}));
+
 intakeRouter.post('/applications/:id/assign-position', requirePermission('application.update'), h(async (req, res) => {
   const { positionId } = parse(z.object({ positionId: z.string().uuid('Select a position') }), req.body);
   const actor = actorId(req);
@@ -294,6 +377,9 @@ intakeRouter.post('/applications/:id/assign-position', requirePermission('applic
     if (!app) throw new HttpError(404, 'Application not found');
     if (CLOSED.includes(app.lifecycleStatus)) throw new HttpError(409, 'Closed applications cannot change.');
     if (app.positionId) throw new HttpError(409, 'This application already has a position. The price snapshot cannot be changed.');
+    await tx.$queryRaw`SELECT id FROM candidate WHERE id = ${app.candidateId}::uuid FOR UPDATE`;
+    if (await tx.application.findFirst({ where: { candidateId: app.candidateId, positionId }, select: { id: true } }))
+      throw new HttpError(409, 'This applicant already has an application for this position.');
     const price = await resolvePositionPrice(tx, positionId);
     try {
       await tx.application.update({ where: { id: app.id }, data: {
@@ -316,11 +402,13 @@ intakeRouter.post('/applications/:id/assign-position', requirePermission('applic
 }));
 
 intakeRouter.get('/candidates/:id/passports', requirePermission('candidate.read'), h(async (req, res) => {
+  const canViewNumber = req.auth!.permissions.has('passport.view_number');
   const rows = await prisma.candidatePassport.findMany({
     where: { candidateId: req.params.id }, orderBy: { expiryDate: 'desc' },
-    select: { id: true, isCurrent: true, issueDate: true, expiryDate: true, issuingCountryId: true },
+    select: { id: true, isCurrent: true, issueDate: true, expiryDate: true, issuingCountryId: true, ...(canViewNumber ? { passportNumberCipher: true } : {}) },
   });
-  res.json({ data: rows.map((r) => ({ ...r, status: passportStatus(r.expiryDate, r.isCurrent) })) });
+  if (canViewNumber && rows.length) await A(req, 'PASSPORT_NUMBERS_VIEWED', 'candidate', req.params.id, { count: rows.length });
+  res.json({ data: rows.map((r) => ({ ...r, ...(canViewNumber ? { passportNumber: decryptPassport(r.passportNumberCipher!) } : {}), status: passportStatus(r.expiryDate, r.isCurrent) })) });
 }));
 
 intakeRouter.post('/candidates/:id/passport', requirePermission('candidate.update'), h(async (req, res) => {

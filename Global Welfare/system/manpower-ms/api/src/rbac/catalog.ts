@@ -1,8 +1,7 @@
 export const PERMISSIONS = [
   { code: 'dashboard.ceo', description: 'View the CEO dashboard' },
-  { code: 'catalogue.read', description: 'View countries, cities, jobs, employers and demands' },
+  { code: 'catalogue.read', description: 'View countries, agencies, companies, jobs and demands' },
   { code: 'catalogue.manage', description: 'Manage recruitment setup and catalogue records' },
-  { code: 'catalogue.eligibility.manage', description: 'Set country recruitment eligibility' },
   { code: 'catalogue.approve', description: 'Approve job position price changes' },
   { code: 'candidate.read', description: 'View candidates' },
   { code: 'candidate.create', description: 'Register candidates' },
@@ -12,6 +11,7 @@ export const PERMISSIONS = [
   { code: 'application.read', description: 'View applications' },
   { code: 'application.create', description: 'Create applications' },
   { code: 'application.update', description: 'Edit applications' },
+  { code: 'selection.manage', description: 'Select applicants for recruitment demands and update selection document status' },
   { code: 'application.source_change_request', description: 'Request a source or agent change' },
   { code: 'application.source_change_approve', description: 'Approve a source or agent change' },
   { code: 'application.close_review', description: 'Review and approve application closure' },
@@ -61,11 +61,11 @@ export const ROLES: { code: string; name: string; description: string; permissio
   },
   {
     code: 'RECRUITMENT_OFFICER', name: 'Recruitment officer', description: 'Interviews and employer selection',
-    permissions: ['candidate.read', 'application.read', 'application.update', 'interview.manage', 'catalogue.read'],
+    permissions: ['candidate.read', 'application.read', 'application.update', 'selection.manage', 'interview.manage', 'catalogue.read'],
   },
   {
     code: 'PROCESSING_OFFICER', name: 'Processing officer', description: 'Documents, medical, visa and custody',
-    permissions: ['candidate.read', 'application.read', 'processing.manage', 'custody.manage',
+    permissions: ['candidate.read', 'application.read', 'selection.manage', 'processing.manage', 'custody.manage',
       'medical.read', 'medical.manage', 'catalogue.read'],
   },
   {

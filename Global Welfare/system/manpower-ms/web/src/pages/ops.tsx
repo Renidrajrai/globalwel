@@ -1,10 +1,11 @@
-﻿import { useState, type JSX, type ReactNode } from 'react';
-import { useParams } from 'react-router-dom';
+import { useState, type FormEvent, type JSX, type ReactNode } from 'react';
+import { Link, useParams } from 'react-router-dom';
 import { useAuth } from '../auth/AuthContext';
 import { BoardPage, DetailPage, ListPage } from '../components/engines';
 import { Button } from '../components/Button';
-import { EmptyState, ErrorState, Money, PageHeader, SkeletonRows, StatusBadge } from '../components/ui';
-import { useJson } from '../lib/useApi';
+import { EmptyState, ErrorState, FormDialog, Money, PageHeader, SkeletonRows, StatusBadge } from '../components/ui';
+import { postJson, useJson } from '../lib/useApi';
+import { ApiError } from '../lib/api';
 
 const LIFECYCLE = ['ACTIVE', 'ON_HOLD', 'STOPPED_PENDING_SETTLEMENT', 'CLOSED_SUCCESSFULLY', 'CLOSED_UNSUCCESSFULLY'];
 const MANUAL_LIFECYCLE = ['ACTIVE', 'ON_HOLD', 'STOPPED_PENDING_SETTLEMENT'];
@@ -43,13 +44,14 @@ export function CandidatesPage(): JSX.Element {
   return (
     <ListPage
       cfg={{
-        title: 'Candidates',
-        hint: 'Register people and track their applications.',
+        title: 'Applicants',
+        hint: 'Search and manage reusable applicant profiles, Refer sources and recruitment history.',
         resource: 'candidates',
         columns: [
-          { header: 'Candidate', cell: (r: any) => r.fullName },
+          { header: 'Applicant', cell: (r: any) => r.fullName },
           { header: 'Code', cell: (r: any) => r.candidateCode },
           { header: 'Phone', cell: (r: any) => r.phone || 'None' },
+          { header: 'Refer', cell: (r: any) => r.refer?.name || 'Direct' },
           { header: 'Applications', cell: (r: any) => r.applications?.length ?? 0 },
         ],
         rowTo: (r: any) => `/candidates/${r.id}`,
@@ -74,8 +76,17 @@ export function CandidateDetailPage(): JSX.Element {
           { label: 'Phone', value: (r: any) => r.phone || 'None' },
           { label: 'Email', value: (r: any) => r.email || 'None' },
           { label: 'Address', value: (r: any) => r.address || 'None' },
+          { label: 'Refer', value: (r: any) => r.refer?.name || 'Direct' },
           { label: 'Date of birth', value: (r: any) => r.dateOfBirth ? String(r.dateOfBirth).slice(0, 10) : 'None' },
         ],
+        primary: {
+          label: 'Edit applicant', perm: ['candidate.update'],
+          form: { title: 'Edit applicant', path: `/resource/candidates/${id}`, method: 'PATCH', fields: [
+            { name: 'fullName', label: 'Full name', required: true }, { name: 'phone', label: 'Phone' }, { name: 'email', label: 'Email' },
+            { name: 'address', label: 'Address', type: 'textarea' },
+            { name: 'referId', label: 'Refer source', optionsResource: { resource: 'referral-partners', label: (row: any) => row.name } },
+          ] },
+        },
         tabs: [
           {
             key: 'applications',
@@ -89,7 +100,7 @@ export function CandidateDetailPage(): JSX.Element {
                   embedded: true,
                   columns: [
                     { header: 'Code', cell: (r: any) => r.code },
-                    { header: 'Position', cell: (r: any) => r.position?.jobTitle?.title || 'None' },
+                    { header: 'Position / demand', cell: (r: any) => r.position ? `${r.position.jobTitle?.title || 'Position'} · ${r.position.demand?.reference || 'No demand ID'}` : 'None' },
                     { header: 'Lifecycle', cell: (r: any) => <StatusBadge value={r.lifecycleStatus} /> },
                     { header: 'Agreed amount', cell: (r: any) => <Money amount={r.agreedAmountSnapshot} currency={r.currency} /> },
                   ],
@@ -110,6 +121,8 @@ export function ApplicationsPage(): JSX.Element {
   const { can } = useAuth();
   if (!can('application.read')) return <AccessDenied />;
   return (
+    <>
+    <PassportApplicationSearch />
     <BoardPage
       cfg={{
         title: 'Applications',
@@ -120,7 +133,7 @@ export function ApplicationsPage(): JSX.Element {
         card: (r: any) => ({
           title: r.code,
           meta: r.candidate?.fullName,
-          tags: [r.position?.jobTitle?.title, r.currency].filter(Boolean),
+          tags: [r.position?.jobTitle?.title, r.position?.demand?.reference, r.position?.demand?.employer?.legalName, r.currency].filter(Boolean),
         }),
         to: (r: any) => `/applications/${r.id}`,
         moves: MANUAL_LIFECYCLE.map((status) => ({
@@ -134,7 +147,29 @@ export function ApplicationsPage(): JSX.Element {
         empty: { title: 'No applications yet.' },
       }}
     />
+    </>
   );
+}
+
+function PassportApplicationSearch(): JSX.Element | null {
+  const { can } = useAuth();
+  const [number, setNumber] = useState('');
+  const [rows, setRows] = useState<any[] | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  if (!can('passport.lookup')) return null;
+  async function search(e: FormEvent) {
+    e.preventDefault(); setBusy(true); setError('');
+    try { const result = await postJson<{ data: any[] }>('/intake/applications/passport-search', { passportNumber: number }); setRows(result.data); }
+    catch (e) { setRows(null); setError(e instanceof ApiError ? e.message : 'Passport search failed.'); }
+    finally { setBusy(false); }
+  }
+  return <section className="mb-6 rounded-xl border border-line p-4" aria-label="Search applications by passport number">
+    <h2 className="title-3">Find applications by passport number</h2>
+    <form onSubmit={search} className="mt-3 flex flex-wrap items-end gap-3"><label className="body-6 flex w-full max-w-sm flex-col gap-1">Passport number<input autoComplete="off" value={number} onChange={(e) => setNumber(e.target.value)} className="body-3 rounded-lg border border-line bg-bg px-3 py-2" /></label><Button type="submit" disabled={busy || !number.trim()}>{busy ? 'Searching…' : 'Search'}</Button></form>
+    {error && <p role="alert" className="body-6 mt-3 text-danger">{error}</p>}
+    {rows && (rows.length ? <ul className="mt-3 divide-y divide-line rounded-lg border border-line">{rows.map((row) => <li key={row.id}><Link to={`/applications/${row.id}`} className="flex flex-wrap justify-between gap-2 p-3 hover:bg-surface"><span>{row.candidate.fullName} · {row.position?.jobTitle?.title ?? 'Position not assigned'} · {row.position?.demand?.employer?.legalName ?? 'No company'}</span><span className="caption-5 text-muted">{row.code}</span></Link></li>)}</ul> : <p className="body-6 mt-3 text-muted">No applications found for that passport.</p>)}
+  </section>;
 }
 
 export function ApplicationDetailPage(): JSX.Element {
@@ -149,6 +184,8 @@ export function ApplicationDetailPage(): JSX.Element {
         fields: [
           { label: 'Candidate', value: (r: any) => r.candidate?.fullName || 'None' },
           { label: 'Position', value: (r: any) => r.position?.jobTitle?.title || 'None' },
+          { label: 'Demand ID', value: (r: any) => r.position?.demand?.reference || 'None' },
+          { label: 'Company', value: (r: any) => r.position?.demand?.employer?.legalName || 'None' },
           { label: 'Source', value: (r: any) => r.sourceType },
           { label: 'Lifecycle', value: (r: any) => <StatusBadge value={r.lifecycleStatus} /> },
           { label: 'Agreed amount', value: (r: any) => <Money amount={r.agreedAmountSnapshot} currency={r.currency} /> },
@@ -260,19 +297,22 @@ export function ApplicationDetailPage(): JSX.Element {
 }
 
 function CandidatePassports({ id }: { id: string }): JSX.Element {
+  const { can } = useAuth();
+  const [adding, setAdding] = useState(false);
   const { data, loading, error, reload } = useJson<any[]>(`/intake/candidates/${id}/passports`);
   if (loading) return <SkeletonRows />;
   if (error) return <ErrorState message={error} retry={reload} />;
-  if (!data?.length) return <EmptyState title="No passports on file." hint="Add a passport to release no-passport holds." />;
+  if (!data?.length) return <div><EmptyState title="No passports on file." hint="Add a passport to release no-passport holds." />{can('candidate.update') && <div className="mt-3"><Button size="sm" onClick={() => setAdding(true)}>Add passport</Button></div>}{adding && <PassportForm id={id} close={() => setAdding(false)} saved={() => { setAdding(false); reload(); }} />}</div>;
   return (
     <div className="overflow-hidden rounded-2xl border border-line">
       <div className="w-full overflow-x-auto">
         <table className="w-full min-w-[24rem] border-collapse text-left">
-          <thead className="bg-surface"><tr>{['Status', 'Current', 'Issue', 'Expiry'].map((h) => <th key={h} scope="col" className="caption-4 p-3">{h}</th>)}</tr></thead>
+          <thead className="bg-surface"><tr>{['Status', ...(can('passport.view_number') ? ['Passport number'] : []), 'Current', 'Issue', 'Expiry'].map((h) => <th key={h} scope="col" className="caption-4 p-3">{h}</th>)}</tr></thead>
           <tbody>
             {data.map((r: any) => (
               <tr key={r.id} className="border-t border-line">
                 <td className="body-6 p-3"><StatusBadge value={r.status} /></td>
+                {can('passport.view_number') && <td className="body-6 p-3">{r.passportNumber}</td>}
                 <td className="body-6 p-3">{r.isCurrent ? 'Yes' : 'No'}</td>
                 <td className="body-6 p-3">{String(r.issueDate).slice(0, 10)}</td>
                 <td className="body-6 p-3">{String(r.expiryDate).slice(0, 10)}</td>
@@ -281,8 +321,17 @@ function CandidatePassports({ id }: { id: string }): JSX.Element {
           </tbody>
         </table>
       </div>
+      {can('candidate.update') && <div className="p-3"><Button size="sm" onClick={() => setAdding(true)}>Add passport</Button></div>}
+      {adding && <PassportForm id={id} close={() => setAdding(false)} saved={() => { setAdding(false); reload(); }} />}
     </div>
   );
+}
+
+function PassportForm({ id, close, saved }: { id: string; close: () => void; saved: () => void }): JSX.Element {
+  return <FormDialog open form={{ title: 'Add passport', path: `/intake/candidates/${id}/passport`, method: 'POST', fields: [
+    { name: 'passportNumber', label: 'Passport number', required: true }, { name: 'issuingCountryId', label: 'Issuing country', type: 'select', required: true, optionsResource: { resource: 'countries', label: (country: any) => country.name } },
+    { name: 'issueDate', label: 'Issue date', type: 'date', required: true }, { name: 'expiryDate', label: 'Expiry date', type: 'date', required: true },
+  ] }} onClose={close} onSaved={saved} />;
 }
 
 function ApplicationFinance({ id }: { id: string }): JSX.Element {

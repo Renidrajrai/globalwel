@@ -6,12 +6,12 @@ import { audit } from '../lib/audit';
 import { HttpError } from '../lib/http';
 import { candidateSearchWhere } from '../lib/candidateSearch';
 import { alpha3ToAlpha2, alpha2ToAlpha3 } from '../lib/countryCodes';
-import { looksLikePassport } from '../lib/passport';
 import { dateKey, isRealDate, toDateOnly, todayKathmandu } from '../lib/dates';
 import { currentPriceWhere, positionBlockers } from '../lib/catalogueRules';
 import { decideApproval } from '../lib/approvals';
 import { requireAuth, requirePermission } from '../auth/middleware';
 import { hashPassword } from '../lib/password';
+import { nextDemandReference } from '../lib/demandReference';
 
 type WriteRule = string | { create?: string; update?: string };
 
@@ -45,19 +45,21 @@ const resources: Record<string, Resource> = {
     delegate: 'candidate',
     read: ['candidate.read'],
     write: { update: 'candidate.update' },
-    fields: ['fullName', 'dateOfBirth', 'phone', 'altPhone', 'email', 'address'],
-    updateFields: ['fullName', 'dateOfBirth', 'phone', 'altPhone', 'email', 'address'],
-    searchWhere: async (q, req, db) => {
-      const canSearchPassport = req.auth!.permissions.has('passport.lookup');
-      const countries = canSearchPassport && looksLikePassport(q) ? await db.country.findMany({ select: { iso2Code: true } }) : [];
-      return candidateSearchWhere(q, canSearchPassport, countries.map((country: { iso2Code: string }) => country.iso2Code));
-    },
+    fields: ['fullName', 'dateOfBirth', 'phone', 'altPhone', 'email', 'address', 'nextOfKin', 'referId'],
+    updateFields: ['fullName', 'dateOfBirth', 'phone', 'altPhone', 'email', 'address', 'nextOfKin', 'referId'],
+    searchWhere: (q) => candidateSearchWhere(q, false),
     orderBy: [{ createdAt: 'desc' }],
     include: {
-      applications: { select: { id: true, code: true, lifecycleStatus: true, currency: true } },
+      refer: { select: { id: true, name: true } },
+      applications: { select: { id: true, code: true, lifecycleStatus: true, currency: true, selectedAt: true, position: { select: { jobTitle: { select: { title: true } }, demand: { select: { reference: true, destinationCountry: { select: { name: true } }, employer: { select: { legalName: true } } } } } } } },
       passports: { select: { id: true, isCurrent: true, issueDate: true, expiryDate: true }, orderBy: { expiryDate: 'desc' } },
     },
+    filters: ['referId'],
     prepare: async (op, data, existing, db) => {
+      if ('referId' in data && data.referId) {
+        const refer = await db.referralPartner.findUnique({ where: { id: data.referId }, select: { active: true } });
+        if (!refer?.active) throw new HttpError(400, 'Select an active Refer source.', { referId: 'Refer is unavailable.' });
+      }
       if (op !== 'update' || !('dateOfBirth' in data)) return;
       if (data.dateOfBirth === null || data.dateOfBirth === '') {
         const n = await db.candidatePassport.count({ where: { candidateId: existing.id } });
@@ -80,6 +82,10 @@ const resources: Record<string, Resource> = {
     fields: ['code', 'candidateId', 'positionId', 'priceVersionId', 'currency', 'agreedAmountSnapshot', 'packageTotalSnapshot', 'sourceType', 'referralPartnerId', 'lifecycleStatus', 'holdReason', 'nextReviewOn', 'assignedToId'],
     updateFields: ['assignedToId', 'nextReviewOn'],
     search: ['code'],
+    searchWhere: (q) => ({ OR: [
+      { code: { contains: q, mode: 'insensitive' } },
+      { candidate: { fullName: { contains: q, mode: 'insensitive' } } },
+    ] }),
     include: {
       candidate: true,
       position: {
@@ -91,29 +97,27 @@ const resources: Record<string, Resource> = {
       },
       referralPartner: true,
     },
-    filters: ['candidateId', 'positionId', 'lifecycleStatus', 'sourceType', 'referralPartnerId', 'assignedToId'],
+    filters: ['candidateId', 'positionId', 'lifecycleStatus', 'sourceType', 'referralPartnerId', 'assignedToId', 'selected'],
   },
   'referral-partners': {
     delegate: 'referralPartner', read: ['catalogue.read'], write: 'catalogue.manage',
-    createFields: ['name', 'contact', 'partnerType'],
-    updateFields: ['name', 'contact', 'partnerType', 'active'],
-    fields: ['name', 'contact', 'partnerType', 'verificationStatus', 'active'],
-    search: ['name', 'contact'], filters: ['active', 'verificationStatus'], orderBy: { name: 'asc' },
+    createFields: ['name', 'contact', 'notes'],
+    updateFields: ['name', 'contact', 'notes', 'active'],
+    fields: ['name', 'contact', 'notes', 'partnerType', 'verificationStatus', 'active'],
+    search: ['name', 'contact', 'notes'], filters: ['active', 'verificationStatus'], orderBy: { name: 'asc' },
+    include: { _count: { select: { referredCandidates: true } } },
     prepare: async (_op, data) => { if ('name' in data) data.name = text(data.name, 'Name'); },
   },
   countries: {
     delegate: 'country', read: ['catalogue.read'], write: 'catalogue.manage',
-    createFields: ['iso3Code', 'name'],
-    updateFields: ['name', 'active'],
-    fields: ['iso2Code', 'iso3Code', 'name', 'active', 'eligibility', 'eligibilitySource', 'eligibilityVerifiedAt', 'eligibilityVerifiedById'],
-    search: ['iso2Code', 'iso3Code', 'name'], filters: ['active', 'eligibility'], orderBy: { name: 'asc' },
-    decorate: async (rows, db) => {
-      const ids = [...new Set(rows.map((row) => row.eligibilityVerifiedById).filter(Boolean))] as string[];
-      const users = ids.length ? await db.user.findMany({ where: { id: { in: ids } }, select: { id: true, fullName: true } }) : [];
-      const names = new Map(users.map((user: { id: string; fullName: string }) => [user.id, user.fullName]));
-      return rows.map((row) => ({ ...row, iso3Code: row.iso3Code ?? alpha2ToAlpha3.get(row.iso2Code) ?? null, eligibilityVerifiedByName: names.get(row.eligibilityVerifiedById) ?? null }));
-    },
+    createFields: ['iso3Code', 'name', 'region'],
+    updateFields: ['name', 'region', 'displayOrder', 'active'],
+    fields: ['iso2Code', 'iso3Code', 'name', 'region', 'displayOrder', 'active'],
+    search: ['iso2Code', 'iso3Code', 'name'], filters: ['active', 'region'], orderBy: [{ region: 'asc' }, { displayOrder: 'asc' }, { name: 'asc' }],
+    decorate: async (rows) => rows.map((row) => ({ ...row, iso3Code: row.iso3Code ?? alpha2ToAlpha3.get(row.iso2Code) ?? null })),
     prepare: async (op, data, existing, db) => {
+      if ('region' in data && data.region !== null && !['EUROPE', 'GULF'].includes(data.region)) throw new HttpError(400, 'Choose Europe or Gulf.', { region: 'Choose a valid region.' });
+      if ('displayOrder' in data && (!Number.isInteger(data.displayOrder) || data.displayOrder < 0 || data.displayOrder > 100000)) throw new HttpError(400, 'Invalid country order.', { displayOrder: 'Use a whole number from 0 to 100000.' });
       if (op === 'create') {
         data.iso3Code = text(data.iso3Code, 'Country code', 3, 3).toUpperCase();
         const alpha2 = alpha3ToAlpha2.get(data.iso3Code);
@@ -128,28 +132,18 @@ const resources: Record<string, Resource> = {
     },
   },
   cities: {
-    delegate: 'city', read: ['catalogue.read'], write: 'catalogue.manage',
-    createFields: ['countryId', 'name', 'region'],
-    updateFields: ['name', 'region', 'active'],
-    fields: ['countryId', 'name', 'normalizedName', 'region', 'active'],
+    delegate: 'city', read: ['catalogue.read'],
     search: ['name'], filters: ['countryId', 'active'], orderBy: { name: 'asc' },
     include: { country: { select: { id: true, name: true, iso2Code: true } } },
-    prepare: async (op, data, existing, db) => {
-      if ('name' in data) { data.name = text(data.name, 'City name'); data.normalizedName = normName(data.name); }
-      if (op === 'update' && data.active === false && existing.active) {
-        const n = await db.jobPosition.count({ where: { cityId: existing.id, active: true } });
-        if (n) throw new HttpError(409, 'This city has active positions. Deactivate them first.');
-      }
-    },
   },
   employers: {
     delegate: 'employer', read: ['catalogue.read'], write: 'catalogue.manage',
     createFields: ['registeredCountryId', 'legalName', 'reference', 'contactName', 'email', 'phone'],
     updateFields: ['legalName', 'reference', 'contactName', 'email', 'phone', 'active'],
     fields: ['registeredCountryId', 'legalName', 'reference', 'contactName', 'email', 'phone', 'verificationStatus', 'active'],
-    search: ['legalName', 'reference', 'contactName'], filters: ['registeredCountryId', 'active', 'verificationStatus'],
+    search: ['legalName', 'reference', 'contactName'], filters: ['registeredCountryId', 'active', 'verificationStatus', 'overseasAgencyId'],
     orderBy: { legalName: 'asc' },
-    include: { registeredCountry: { select: { id: true, name: true, iso2Code: true } } },
+    include: { registeredCountry: { select: { id: true, name: true, iso2Code: true } }, destinationCountries: { include: { country: { select: { id: true, name: true } } } }, overseasAgencies: { include: { overseasAgency: { select: { id: true, name: true, country: { select: { id: true, name: true } } } } } }, jobTitles: { include: { jobTitle: true } } },
     prepare: async (op, data, existing, db) => {
       if ('legalName' in data) data.legalName = text(data.legalName, 'Legal name');
       if (op === 'update' && data.active === false && existing.active) {
@@ -158,14 +152,29 @@ const resources: Record<string, Resource> = {
       }
     },
   },
+  'overseas-agencies': {
+    delegate: 'overseasAgency', read: ['catalogue.read'], write: 'catalogue.manage',
+    createFields: ['countryId', 'name', 'contactName', 'phone', 'email', 'notes'],
+    updateFields: ['countryId', 'name', 'contactName', 'phone', 'email', 'notes', 'active'],
+    fields: ['countryId', 'name', 'contactName', 'phone', 'email', 'notes', 'active'],
+    search: ['name', 'contactName', 'phone', 'email'], filters: ['countryId', 'active'], orderBy: [{ name: 'asc' }],
+    include: { country: { select: { id: true, name: true } }, employers: { include: { employer: { select: { id: true, legalName: true } } } }, demands: { select: { id: true, reference: true, active: true, positions: { select: { id: true, vacancies: true, jobTitle: { select: { title: true } } } } } } },
+    prepare: async (_op, data) => { if ('name' in data) data.name = text(data.name, 'Agency name'); },
+  },
   demands: {
     delegate: 'jobDemand', read: ['catalogue.read'], write: 'catalogue.manage',
-    createFields: ['employerId', 'destinationCountryId', 'reference', 'feimsReference', 'expiresOn'],
-    updateFields: ['feimsReference', 'expiresOn', 'active'],
-    fields: ['employerId', 'destinationCountryId', 'reference', 'feimsReference', 'expiresOn', 'active'],
-    search: ['reference', 'feimsReference'], filters: ['employerId', 'destinationCountryId', 'active'],
+    createFields: ['employerId', 'destinationCountryId', 'overseasAgencyId', 'feimsReference', 'expiresOn'],
+    updateFields: ['overseasAgencyId', 'expiresOn', 'active'],
+    fields: ['employerId', 'destinationCountryId', 'overseasAgencyId', 'reference', 'feimsReference', 'expiresOn', 'active'],
+    search: ['reference', 'feimsReference'], filters: ['employerId', 'destinationCountryId', 'overseasAgencyId', 'active'],
     orderBy: [{ createdAt: 'desc' }],
-    include: { employer: true, destinationCountry: true },
+    include: { employer: true, overseasAgency: true, destinationCountry: true, positions: { include: { jobTitle: true, city: true, applications: { where: { selectedAt: { not: null } }, select: { id: true } }, priceVersions: { include: { components: true }, orderBy: { createdAt: 'desc' } } } } },
+    searchWhere: (q) => ({ OR: [
+      { reference: { contains: q, mode: 'insensitive' } },
+      { employer: { legalName: { contains: q, mode: 'insensitive' } } },
+      { overseasAgency: { name: { contains: q, mode: 'insensitive' } } },
+      { positions: { some: { jobTitle: { title: { contains: q, mode: 'insensitive' } } } } },
+    ] }),
     prepare: async (op, data, existing) => {
       if ('reference' in data) data.reference = text(data.reference, 'Reference', 2, 100);
       if ('feimsReference' in data) {
@@ -182,12 +191,11 @@ const resources: Record<string, Resource> = {
     delegate: 'jobPosition', read: ['catalogue.read'], write: { update: 'catalogue.manage' },
     updateFields: ['vacancies', 'salaryAmount', 'salaryCurrency', 'terms', 'active'],
     fields: ['demandId', 'destinationCountryId', 'cityId', 'jobTitleId', 'vacancies', 'salaryAmount', 'salaryCurrency', 'terms', 'active'],
-    filters: ['demandId', 'destinationCountryId', 'cityId', 'jobTitleId', 'active'],
+    filters: ['demandId', 'destinationCountryId', 'jobTitleId', 'active'],
     orderBy: [{ createdAt: 'desc' }],
     include: { jobTitle: true, city: { include: { country: true } }, demand: { include: { employer: true, destinationCountry: true } } },
     searchWhere: (q) => ({ OR: [
       { jobTitle: { title: { contains: q, mode: 'insensitive' } } },
-      { city: { name: { contains: q, mode: 'insensitive' } } },
       { demand: { reference: { contains: q, mode: 'insensitive' } } },
       { demand: { employer: { legalName: { contains: q, mode: 'insensitive' } } } },
     ] }),
@@ -525,9 +533,13 @@ const buildWhere = async (config: Resource, req: Request) => {
   for (const key of config.filters ?? []) {
     const raw = req.query[key];
     if (typeof raw !== 'string' || raw === '') continue;
-    if (key === 'active' && raw !== 'true' && raw !== 'false') throw new HttpError(400, 'Invalid active filter.');
-    const value = key === 'active' ? raw === 'true' : raw;
-    if (config.delegate === 'companyExpense' && key === 'applicationId') {
+    if ((key === 'active' || key === 'selected') && raw !== 'true' && raw !== 'false') throw new HttpError(400, `Invalid ${key} filter.`);
+    const value = key === 'active' || key === 'selected' ? raw === 'true' : raw;
+      if (key === 'overseasAgencyId' && config.delegate === 'employer') {
+        where.overseasAgencies = { some: { overseasAgencyId: value } };
+      } else if (key === 'selected' && config.delegate === 'application') {
+      where.selectedAt = value ? { not: null } : null;
+    } else if (config.delegate === 'companyExpense' && key === 'applicationId') {
       where.allocations = { some: { applicationId: value } };
     } else {
       where[key] = value;
@@ -582,10 +594,6 @@ resourcesRouter.get('/:name', requireAuth, guard('read'), wrap(async (req, res) 
     delegateOf(config).findMany({ where, skip, take, orderBy: config.orderBy ?? { id: 'asc' }, ...shape(config) }),
     delegateOf(config).count({ where }),
   ]);
-  if (config.delegate === 'candidate' && typeof req.query.q === 'string' && looksLikePassport(req.query.q)
-      && req.auth!.permissions.has('passport.lookup')) {
-    await audit(req, 'PASSPORT_LOOKUP', { entityType: 'candidate', detail: { via: 'search' } });
-  }
   const out = config.decorate ? await config.decorate(rows, prisma) : rows;
   res.json({ data: serialize(out), total, page, pageSize });
 }));
@@ -600,6 +608,7 @@ resourcesRouter.get('/:name/:id', requireAuth, guard('read'), wrap(async (req, r
 resourcesRouter.post('/:name', requireAuth, guard('create'), wrap(async (req, res) => {
   const config = resources[req.params.name]!;
   const data = config.delegate === 'user' ? await userData(req.body, true) : pickFields(req.body, config.createFields ?? config.fields);
+  if (config.delegate === 'jobDemand') data.reference = await prisma.$transaction((tx) => nextDemandReference(tx));
   if (config.prepare) await config.prepare('create', data, null, prisma);
   if (config.delegate === 'candidate' && !data.nameNormalized && typeof data.fullName === 'string') {
     data.nameNormalized = data.fullName.trim().toLowerCase().replace(/\s+/g, ' ');
@@ -623,6 +632,107 @@ resourcesRouter.patch('/:name/:id', requireAuth, guard('update'), wrap(async (re
   const row = await delegateOf(config).update({ where: { id: req.params.id }, data, ...shape(config) });
   await audit(req, 'CATALOGUE_RESOURCE_UPDATED', { entityType: req.params.name, entityId: row.id, detail: { fields: Object.keys(data) } });
   res.json({ data: serialize(row) });
+}));
+
+resourcesRouter.put('/employers/:id/overseas-agencies', requireAuth, requirePermission('catalogue.manage'), wrap(async (req, res) => {
+  const ids = req.body?.overseasAgencyIds;
+  if (!Array.isArray(ids) || ids.length > 100 || ids.some((id: unknown) => typeof id !== 'string' || !/^[0-9a-f-]{36}$/i.test(id)))
+    throw new HttpError(400, 'Choose valid overseas agencies.', { overseasAgencyIds: 'Invalid agency list.' });
+  const uniqueIds = [...new Set(ids as string[])];
+  const [employer, agencies] = await Promise.all([
+    prisma.employer.findUnique({ where: { id: req.params.id }, select: { id: true } }),
+    prisma.overseasAgency.findMany({ where: { id: { in: uniqueIds }, active: true }, select: { id: true } }),
+  ]);
+  if (!employer) throw new HttpError(404, 'Company not found.');
+  if (agencies.length !== uniqueIds.length) throw new HttpError(400, 'One or more agencies are unavailable.');
+  await prisma.$transaction(async (tx) => {
+    await tx.employerOverseasAgency.deleteMany({ where: { employerId: employer.id } });
+    if (uniqueIds.length) await tx.employerOverseasAgency.createMany({ data: uniqueIds.map((overseasAgencyId) => ({ employerId: employer.id, overseasAgencyId })) });
+  });
+  await audit(req, 'COMPANY_OVERSEAS_AGENCIES_UPDATED', { entityType: 'employer', entityId: employer.id, detail: { count: uniqueIds.length } });
+  res.json({ data: { ok: true, overseasAgencyIds: uniqueIds } });
+}));
+
+resourcesRouter.put('/employers/:id/destination-countries', requireAuth, requirePermission('catalogue.manage'), wrap(async (req, res) => {
+  const ids = req.body?.countryIds;
+  if (!Array.isArray(ids) || ids.length > 100 || ids.some((id: unknown) => typeof id !== 'string' || !/^[0-9a-f-]{36}$/i.test(id)))
+    throw new HttpError(400, 'Choose valid destination countries.', { countryIds: 'Invalid country list.' });
+  const uniqueIds = [...new Set(ids as string[])];
+  const [employer, countries] = await Promise.all([
+    prisma.employer.findUnique({ where: { id: req.params.id }, select: { id: true } }),
+    prisma.country.findMany({ where: { id: { in: uniqueIds }, active: true }, select: { id: true } }),
+  ]);
+  if (!employer) throw new HttpError(404, 'Company not found.');
+  if (countries.length !== uniqueIds.length) throw new HttpError(400, 'One or more countries are unavailable.');
+  await prisma.$transaction(async (tx) => {
+    await tx.employerDestinationCountry.deleteMany({ where: { employerId: employer.id } });
+    if (uniqueIds.length) await tx.employerDestinationCountry.createMany({ data: uniqueIds.map((countryId) => ({ employerId: employer.id, countryId })) });
+  });
+  await audit(req, 'COMPANY_DESTINATION_COUNTRIES_UPDATED', { entityType: 'employer', entityId: employer.id, detail: { count: uniqueIds.length } });
+  res.json({ data: { ok: true, countryIds: uniqueIds } });
+}));
+
+resourcesRouter.put('/employers/:id/relationships', requireAuth, requirePermission('catalogue.manage'), wrap(async (req, res) => {
+  const countryIds = req.body?.countryIds; const overseasAgencyIds = req.body?.overseasAgencyIds;
+  const validIds = (ids: unknown) => Array.isArray(ids) && ids.length <= 100 && ids.every((id) => typeof id === 'string' && /^[0-9a-f-]{36}$/i.test(id));
+  if (!validIds(countryIds) || !validIds(overseasAgencyIds)) throw new HttpError(400, 'Choose valid countries and agencies.');
+  const countriesToLink = [...new Set(countryIds as string[])]; const agenciesToLink = [...new Set(overseasAgencyIds as string[])];
+  const [employer, countries, agencies] = await Promise.all([
+    prisma.employer.findUnique({ where: { id: req.params.id }, select: { id: true } }),
+    prisma.country.findMany({ where: { id: { in: countriesToLink }, active: true }, select: { id: true } }),
+    prisma.overseasAgency.findMany({ where: { id: { in: agenciesToLink }, active: true }, select: { id: true } }),
+  ]);
+  if (!employer) throw new HttpError(404, 'Company not found.');
+  if (countries.length !== countriesToLink.length || agencies.length !== agenciesToLink.length) throw new HttpError(400, 'One or more relationship records are unavailable.');
+  await prisma.$transaction(async (tx) => {
+    await tx.employerDestinationCountry.deleteMany({ where: { employerId: employer.id } });
+    await tx.employerOverseasAgency.deleteMany({ where: { employerId: employer.id } });
+    if (countriesToLink.length) await tx.employerDestinationCountry.createMany({ data: countriesToLink.map((countryId) => ({ employerId: employer.id, countryId })) });
+    if (agenciesToLink.length) await tx.employerOverseasAgency.createMany({ data: agenciesToLink.map((overseasAgencyId) => ({ employerId: employer.id, overseasAgencyId })) });
+  });
+  await audit(req, 'COMPANY_RELATIONSHIPS_UPDATED', { entityType: 'employer', entityId: employer.id, detail: { countryCount: countriesToLink.length, agencyCount: agenciesToLink.length } });
+  res.json({ data: { ok: true } });
+}));
+
+resourcesRouter.post('/overseas-agencies/:id/companies', requireAuth, requirePermission('catalogue.manage'), wrap(async (req, res) => {
+  const body = req.body ?? {};
+  const legalName = text(body.legalName, 'Company name');
+  const rawCountryIds = Array.isArray(body.countryIds) ? body.countryIds : body.destinationCountryId ? [body.destinationCountryId] : [];
+  if (rawCountryIds.length > 100 || rawCountryIds.some((id: unknown) => typeof id !== 'string' || !/^[0-9a-f-]{36}$/i.test(id))) throw new HttpError(400, 'Choose valid destination countries.');
+  const countryIds = [...new Set(rawCountryIds as string[])];
+  const [agency, countries] = await Promise.all([
+    prisma.overseasAgency.findUnique({ where: { id: req.params.id }, select: { id: true, countryId: true, active: true } }),
+    prisma.country.findMany({ where: { id: { in: countryIds }, active: true }, select: { id: true } }),
+  ]);
+  if (!agency?.active) throw new HttpError(404, 'Active overseas agency not found.');
+  if (countries.length !== countryIds.length) throw new HttpError(400, 'One or more destination countries are unavailable.');
+  const company = await prisma.$transaction(async (tx) => tx.employer.create({ data: {
+    registeredCountryId: agency.countryId, legalName, contactName: typeof body.contactName === 'string' ? body.contactName.trim() || null : null,
+    phone: typeof body.phone === 'string' ? body.phone.trim() || null : null, email: typeof body.email === 'string' ? body.email.trim() || null : null,
+    overseasAgencies: { create: { overseasAgencyId: agency.id } },
+    ...(countryIds.length ? { destinationCountries: { create: countryIds.map((countryId) => ({ countryId })) } } : {}),
+  }, include: { registeredCountry: true, overseasAgencies: { include: { overseasAgency: true } }, destinationCountries: { include: { country: true } }, jobTitles: { include: { jobTitle: true } } } }));
+  await audit(req, 'COMPANY_CREATED_FOR_OVERSEAS_AGENCY', { entityType: 'employer', entityId: company.id, detail: { overseasAgencyId: agency.id } });
+  res.status(201).json({ data: serialize(company) });
+}));
+
+resourcesRouter.post('/employers/:id/job-titles', requireAuth, requirePermission('catalogue.manage'), wrap(async (req, res) => {
+  const titleId = typeof req.body?.jobTitleId === 'string' ? req.body.jobTitleId : null;
+  const title = typeof req.body?.title === 'string' ? text(req.body.title, 'Job title') : null;
+  if (!titleId && !title) throw new HttpError(400, 'Choose or enter a job title.');
+  const employer = await prisma.employer.findUnique({ where: { id: req.params.id }, select: { id: true } });
+  if (!employer) throw new HttpError(404, 'Company not found.');
+  const normalizedTitle = title?.toLowerCase().replace(/\s+/g, ' ');
+  const job = await prisma.$transaction(async (tx) => {
+    const row = titleId
+      ? await tx.jobTitle.findFirst({ where: { id: titleId, active: true } })
+      : await tx.jobTitle.upsert({ where: { normalizedTitle: normalizedTitle! }, create: { title: title!, normalizedTitle: normalizedTitle! }, update: {} });
+    if (!row?.active) throw new HttpError(400, 'Choose an active job title.');
+    await tx.employerJobTitle.upsert({ where: { employerId_jobTitleId: { employerId: employer.id, jobTitleId: row.id } }, create: { employerId: employer.id, jobTitleId: row.id }, update: {} });
+    return row;
+  });
+  await audit(req, 'COMPANY_JOB_TITLE_LINKED', { entityType: 'employer', entityId: employer.id, detail: { jobTitleId: job.id } });
+  res.status(201).json({ data: job });
 }));
 
 resourcesRouter.post('/:name/:id/reverse', requireAuth, guard('update'), wrap(async (req, res) => {
@@ -762,7 +872,9 @@ analyticsRouter.get('/summary', requireAuth, wrap(async (req, res) => {
   const canReadApplications = req.auth!.permissions.has('application.read');
   const canReadApprovals = req.auth!.permissions.has('catalogue.approve') || req.auth!.permissions.has('finance.settlement.approve') || req.auth!.permissions.has('finance.commission.approve');
   const canReadFinance = req.auth!.permissions.has('report.finance') || req.auth!.permissions.has('finance.receipt.read');
-  const [activeApplications, pendingApprovals, pendingRefunds, collected] = await Promise.all([
+  const canReadCatalogue = req.auth!.permissions.has('catalogue.read');
+  const canReadSelection = req.auth!.permissions.has('application.read') && req.auth!.permissions.has('candidate.read');
+  const [activeApplications, pendingApprovals, pendingRefunds, collected, activeAgencies, activeRefers, activeCompanies, activeDemands, countryRegions, requestedVacancies, selectedWorkers, pendingPhoto, pendingPcc, pendingMedical] = await Promise.all([
     canReadApplications ? prisma.application.count({ where: { lifecycleStatus: 'ACTIVE' } }) : Promise.resolve(null),
     canReadApprovals ? prisma.approvalAction.count({ where: { decision: 'PENDING', entityType: { in: ['JOB_PRICE_VERSION', 'PARTNER_COMMISSION', 'CANDIDATE_SETTLEMENT'] } } }) : Promise.resolve(null),
     canReadFinance ? prisma.candidateRefund.count({ where: { amount: { gt: 0 } } }) : Promise.resolve(null),
@@ -771,7 +883,18 @@ analyticsRouter.get('/summary', requireAuth, wrap(async (req, res) => {
       where: { amount: { gt: 0 }, receivedOn: { gte: monthStart } },
       _sum: { amount: true },
     }) : Promise.resolve([]),
+    canReadCatalogue ? prisma.overseasAgency.count({ where: { active: true } }) : Promise.resolve(null),
+    canReadCatalogue ? prisma.referralPartner.count({ where: { active: true } }) : Promise.resolve(null),
+    canReadCatalogue ? prisma.employer.count({ where: { active: true } }) : Promise.resolve(null),
+    canReadCatalogue ? prisma.jobDemand.count({ where: { active: true } }) : Promise.resolve(null),
+    canReadCatalogue ? prisma.country.groupBy({ by: ['region'], where: { active: true }, _count: { _all: true } }) : Promise.resolve([]),
+    canReadCatalogue ? prisma.jobPosition.aggregate({ where: { active: true, demand: { active: true } }, _sum: { vacancies: true } }) : Promise.resolve(null),
+    canReadSelection ? prisma.application.count({ where: { selectedAt: { not: null }, position: { active: true, demand: { active: true } } } }) : Promise.resolve(null),
+    canReadSelection ? prisma.application.count({ where: { selectedAt: { not: null }, photoStatus: 'PENDING', position: { active: true, demand: { active: true } } } }) : Promise.resolve(null),
+    canReadSelection ? prisma.application.count({ where: { selectedAt: { not: null }, pccStatus: 'PENDING', position: { active: true, demand: { active: true } } } }) : Promise.resolve(null),
+    canReadSelection ? prisma.application.count({ where: { selectedAt: { not: null }, medicalStatus: 'PENDING', position: { active: true, demand: { active: true } } } }) : Promise.resolve(null),
   ]);
+  const vacancies = requestedVacancies?._sum.vacancies ?? null;
   res.json({
     data: {
       activeApplications,
@@ -781,6 +904,34 @@ analyticsRouter.get('/summary', requireAuth, wrap(async (req, res) => {
         currency: row.currency,
         amount: serialize(row._sum.amount ?? new Prisma.Decimal(0)),
       })),
+      businessMetrics: canReadCatalogue ? {
+        activeAgencies, activeRefers, activeCompanies, activeDemands,
+        countriesByRegion: countryRegions.map((row) => ({ region: row.region, count: row._count._all })),
+        requestedVacancies: vacancies,
+        selectedWorkers,
+        vacanciesRemaining: canReadSelection && vacancies !== null && selectedWorkers !== null ? Math.max(0, vacancies - selectedWorkers) : null,
+        pendingPhoto, pendingPcc, pendingMedical,
+      } : null,
     },
   });
+}));
+
+analyticsRouter.get('/search', requireAuth, wrap(async (req, res) => {
+  const q = typeof req.query.q === 'string' ? req.query.q.trim().slice(0, 100) : '';
+  if (q.length < 2) return res.json({ data: [] });
+  const canReadCandidates = req.auth!.permissions.has('candidate.read');
+  const canReadCatalogue = req.auth!.permissions.has('catalogue.read');
+  const jobs: Promise<any[]>[] = [];
+  if (canReadCandidates) {
+    const where = candidateSearchWhere(q, false) ?? { id: '00000000-0000-0000-0000-000000000000' };
+    jobs.push(prisma.candidate.findMany({ where, select: { id: true, fullName: true, candidateCode: true }, take: 5 }).then((rows) => rows.map((row) => ({ type: 'Applicant', title: row.fullName, description: row.candidateCode, to: `/candidates/${row.id}` }))));
+  }
+  if (canReadCatalogue) {
+    jobs.push(prisma.employer.findMany({ where: { OR: [{ legalName: { contains: q, mode: 'insensitive' } }, { demands: { some: { reference: { contains: q, mode: 'insensitive' } } } }] }, select: { id: true, legalName: true }, take: 5 }).then((rows) => rows.map((row) => ({ type: 'Company', title: row.legalName, description: 'Overseas employer', to: `/companies/${row.id}` }))));
+    jobs.push(prisma.overseasAgency.findMany({ where: { OR: [{ name: { contains: q, mode: 'insensitive' } }, { country: { name: { contains: q, mode: 'insensitive' } } }] }, select: { id: true, name: true, country: { select: { name: true } } }, take: 5 }).then((rows) => rows.map((row) => ({ type: 'Overseas agency', title: row.name, description: row.country.name, to: `/agencies/${row.id}` }))));
+    jobs.push(prisma.referralPartner.findMany({ where: { OR: [{ name: { contains: q, mode: 'insensitive' } }, { contact: { contains: q, mode: 'insensitive' } }] }, select: { id: true, name: true }, take: 5 }).then((rows) => rows.map((row) => ({ type: 'Refer', title: row.name, description: 'Applicant source', to: `/refers/${row.id}` }))));
+    jobs.push(prisma.jobDemand.findMany({ where: { OR: [{ reference: { contains: q, mode: 'insensitive' } }, { employer: { legalName: { contains: q, mode: 'insensitive' } } }, { overseasAgency: { name: { contains: q, mode: 'insensitive' } } }, { positions: { some: { jobTitle: { title: { contains: q, mode: 'insensitive' } } } } }] }, select: { id: true, reference: true, employer: { select: { legalName: true } } }, take: 5 }).then((rows) => rows.map((row) => ({ type: 'Demand', title: row.reference, description: row.employer.legalName, to: `/demands/${row.id}` }))));
+    jobs.push(prisma.jobTitle.findMany({ where: { title: { contains: q, mode: 'insensitive' } }, select: { id: true, title: true }, take: 5 }).then((rows) => rows.map((row) => ({ type: 'Job title', title: row.title, description: 'Reusable title', to: '/companies' }))));
+  }
+  res.json({ data: (await Promise.all(jobs)).flat().slice(0, 20) });
 }));

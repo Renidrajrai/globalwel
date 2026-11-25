@@ -9,13 +9,12 @@ export function availablePositionWhere(): Prisma.JobPositionWhereInput {
   return {
     active: true,
     vacancies: { gt: 0 },
-    city: { active: true },
     jobTitle: { active: true },
     demand: {
       active: true,
       OR: [{ expiresOn: null }, { expiresOn: { gte: today } }],
       employer: { active: true },
-      destinationCountry: { active: true, eligibility: 'APPROVED' },
+      destinationCountry: { active: true },
     },
   };
 }
@@ -36,11 +35,11 @@ export function priceFrom(components: { payer: PayerType; amount: Prisma.Decimal
 
 export async function resolvePositionPrice(tx: Prisma.TransactionClient, positionId: string) {
   const pos = await tx.jobPosition.findFirst({ where: { id: positionId, ...availablePositionWhere() } });
-  if (!pos) throw new HttpError(400, 'This position is not open for applications (inactive, expired, ineligible destination, or no vacancies).', { positionId: 'Not available.' });
+  if (!pos) throw new HttpError(400, 'This position is not open for applications (inactive, expired, or no vacancies).', { positionId: 'Not available.' });
   const pv = await tx.jobPriceVersion.findFirst({
     where: { positionId, ...currentPriceWhere() }, orderBy: { effectiveFrom: 'desc' }, include: { components: true },
   });
-  if (!pv) throw new HttpError(400, 'No approved current price for this position.', { positionId: 'No approved price.' });
+  if (!pv) throw new HttpError(400, 'Price not entered or no approved price change is currently effective.', { positionId: 'Price not available.' });
   if (!pv.components.length) throw new HttpError(400, 'The approved price has no components.');
   const { agreed, packageTotal } = priceFrom(pv.components);
   if (packageTotal.lt(agreed)) throw new HttpError(400, 'Price setup error: package total is lower than the agreed amount.');
@@ -55,13 +54,11 @@ export function positionBlockers(p: any, hasPrice: boolean, today: Date): string
   const d = p.demand, c = d?.destinationCountry;
   if (!p.active) out.push('Position is inactive');
   if (p.vacancies <= 0) out.push('No vacancies left');
-  if (!p.city?.active) out.push('City is inactive');
   if (!p.jobTitle?.active) out.push('Job title is inactive');
   if (d && !d.active) out.push('Demand is inactive');
   if (d?.expiresOn && d.expiresOn < today) out.push('Demand has expired');
   if (d && !d.employer?.active) out.push('Employer is inactive');
   if (c && !c.active) out.push('Country is inactive');
-  if (c && c.eligibility !== 'APPROVED') out.push('Country is not approved for recruitment');
-  if (!hasPrice) out.push('No approved current price');
+  if (!hasPrice) out.push('Price not entered or no approved price change is currently effective');
   return out;
 }

@@ -21,6 +21,8 @@ export type RowAction<T> = {
   when?: (row: T) => boolean;
   confirmTitle?: string;
   reason?: boolean;
+  form?: FormDef | ((row: T) => FormDef);
+  initial?: (row: T) => Record<string, unknown>;
 };
 export type ListCfg<T> = {
   title: string;
@@ -29,7 +31,7 @@ export type ListCfg<T> = {
   columns: Col<T>[];
   filters?: FilterDef[];
   fixed?: Record<string, string>;
-  primary?: { label: string; perm?: string[]; form?: FormDef; to?: string };
+  primary?: { label: string; perm?: string[]; form?: FormDef; to?: string; initial?: Record<string, any> };
   rowTo?: (row: T) => string;
   rowActions?: RowAction<T>[];
   empty: { title: string; hint?: string };
@@ -53,6 +55,7 @@ export function ListPage<T extends { id: string }>({ cfg }: { cfg: ListCfg<T> })
   const [formOpen, setFormOpen] = useState(false);
   const [reasonTarget, setReasonTarget] = useState<{ action: RowAction<T>; row: T } | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [formTarget, setFormTarget] = useState<{ action: RowAction<T>; row: T } | null>(null);
 
   const params: Record<string, string | number | boolean | undefined> = { ...cfg.fixed, ...filters };
   if (q.trim()) params.q = q.trim();
@@ -68,6 +71,10 @@ export function ListPage<T extends { id: string }>({ cfg }: { cfg: ListCfg<T> })
     setActionError(null);
     if (action.kind === 'navigate') {
       if (action.to) navigate(action.to(row));
+      return;
+    }
+    if (action.form) {
+      setFormTarget({ action, row });
       return;
     }
     if (action.reason && reason === undefined) {
@@ -261,7 +268,7 @@ export function ListPage<T extends { id: string }>({ cfg }: { cfg: ListCfg<T> })
       )}
 
       {primary?.form && (
-        <FormDialog open={formOpen} form={primary.form} onClose={() => setFormOpen(false)} onSaved={reload} />
+        <FormDialog open={formOpen} form={primary.form} initial={primary.initial} onClose={() => setFormOpen(false)} onSaved={reload} />
       )}
       <ReasonDialog
         open={!!reasonTarget}
@@ -272,6 +279,13 @@ export function ListPage<T extends { id: string }>({ cfg }: { cfg: ListCfg<T> })
           await runAction(reasonTarget.action, reasonTarget.row, reason);
         }}
       />
+      {formTarget && <FormDialog
+        open={true}
+        form={typeof formTarget.action.form === 'function' ? formTarget.action.form(formTarget.row) : formTarget.action.form!}
+        initial={formTarget.action.initial?.(formTarget.row)}
+        onClose={() => setFormTarget(null)}
+        onSaved={() => { setFormTarget(null); reload(); }}
+      />}
     </div>
   );
 }

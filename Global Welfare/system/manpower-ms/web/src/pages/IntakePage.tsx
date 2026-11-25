@@ -7,7 +7,7 @@ import { EmptyState, ErrorState, PageHeader, SkeletonRows, StatusBadge } from '.
 import { ApiError } from '../lib/api';
 import { postJson, useJson, useResource } from '../lib/useApi';
 
-type Lookup = { found: boolean; candidateId?: string; fullName?: string; candidateCode?: string; passportStatus?: string; openApplications?: number };
+type Lookup = { found: boolean; candidateId?: string; fullName?: string; candidateCode?: string; passportStatus?: string; openApplications?: number; referId?: string | null; referName?: string | null };
 type IntakeOptions = { countries: { id: string; name: string; iso2Code: string }[]; referralPartners: { id: string; name: string }[] };
 type Duplicate = { id: string; fullName: string; candidateCode: string };
 type IntakePosition = { id: string; label: string; employer: string; vacancies: number; currency: string; agreedAmount: string };
@@ -23,11 +23,13 @@ export default function IntakePage() {
   const [passportNumber, setPassportNumber] = useState('');
   const [lookup, setLookup] = useState<Lookup | null>(null);
   const [duplicates, setDuplicates] = useState<Duplicate[]>([]);
+  const [positionQuery, setPositionQuery] = useState('');
+  const [selectedPositions, setSelectedPositions] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [form, setForm] = useState({
-    fullName: '', dateOfBirth: '', phone: '', altPhone: '', email: '', address: '',
-    issueDate: '', expiryDate: '', issuingCountryId: '', positionId: '', sourceType: 'DIRECT', referralPartnerId: '',
+    fullName: '', dateOfBirth: '', phone: '', altPhone: '', email: '', address: '', referId: '',
+    issueDate: '', expiryDate: '', issuingCountryId: '',
   });
 
   useEffect(() => {
@@ -39,14 +41,14 @@ export default function IntakePage() {
 
   const set = (key: string, value: string) => {
     setDuplicates([]);
-    setForm((current) => ({ ...current, [key]: value, ...(key === 'sourceType' && value !== 'REFERRED' ? { referralPartnerId: '' } : {}) }));
+    setForm((current) => ({ ...current, [key]: value }));
   };
 
   if (!can('candidate.create') || !canCreateApplication) return <EmptyState title="Intake requires both candidate and application access." hint="Ask an administrator to assign the required permissions." />;
 
   async function doLookup(e: FormEvent) {
     e.preventDefault(); setErr(null); setBusy(true); setLookup(null);
-    try { setLookup(await postJson<Lookup>('/intake/passport-lookup', { passportNumber, issuingCountryId: form.issuingCountryId || null })); }
+    try { const result = await postJson<Lookup>('/intake/passport-lookup', { passportNumber, issuingCountryId: form.issuingCountryId || null }); setLookup(result); setForm((current) => ({ ...current, referId: result.referId ?? '' })); }
     catch (e) { setErr(e instanceof ApiError ? e.message : 'Passport lookup failed. Try again.'); }
     finally { setBusy(false); }
   }
@@ -54,10 +56,11 @@ export default function IntakePage() {
   async function submit(e: FormEvent) {
     e.preventDefault(); setErr(null); setBusy(true);
     try {
-      const application = { positionId: form.positionId, sourceType: form.sourceType, referralPartnerId: form.referralPartnerId || null };
+      const referId = lookup?.found ? lookup.referId ?? null : form.referId || null;
+      const application = { positionIds: selectedPositions, sourceType: referId ? 'REFERRED' : 'DIRECT', referralPartnerId: referId };
       if (lookup?.found && lookup.candidateId) {
-        const res = await postJson<any>('/intake/application', { candidateId: lookup.candidateId, ...application });
-        navigate(`/applications/${res.data.applicationId}`); return;
+        const res = await postJson<any>('/intake/applications', { candidateId: lookup.candidateId, ...application });
+        navigate(`/applications/${res.data.applications[0].id}`); return;
       }
       if (form.dateOfBirth) {
         const result = await postJson<{ data: { matches: Duplicate[] } }>('/intake/duplicate-check', { fullName: form.fullName, dateOfBirth: form.dateOfBirth });
@@ -67,10 +70,10 @@ export default function IntakePage() {
           return;
         }
       }
-      const passport = passportNumber.trim() ? { passportNumber, issueDate: form.issueDate, expiryDate: form.expiryDate, issuingCountryId: form.issuingCountryId || null } : null;
-      const candidate = { fullName: form.fullName, dateOfBirth: form.dateOfBirth || null, phone: form.phone, altPhone: form.altPhone || null, email: form.email || null, address: form.address || null };
+      const passport = passportNumber.trim() ? { passportNumber: passportNumber.trim().toUpperCase(), issueDate: form.issueDate, expiryDate: form.expiryDate, issuingCountryId: form.issuingCountryId || null } : null;
+      const candidate = { fullName: form.fullName, dateOfBirth: form.dateOfBirth || null, phone: form.phone, altPhone: form.altPhone || null, email: form.email || null, address: form.address || null, referId: form.referId || null };
       const res = await postJson<any>('/intake/applicant', { candidate, passport, application });
-      navigate(`/applications/${res.data.applicationId}`);
+      navigate(`/applications/${res.data.applications[0].id}`);
     } catch (e) { setErr(e instanceof ApiError ? e.message : 'Could not complete intake. Check the details and try again.'); }
     finally { setBusy(false); }
   }
@@ -96,6 +99,7 @@ export default function IntakePage() {
           <Field id="altPhone" label="Alt phone" value={form.altPhone} onChange={(e) => set('altPhone', e.target.value)} />
           <Field id="email" label="Email" value={form.email} onChange={(e) => set('email', e.target.value)} />
           <Field id="address" label="Address" value={form.address} onChange={(e) => set('address', e.target.value)} />
+          <label className="title-4 flex flex-col gap-2">Refer (optional)<select value={form.referId} onChange={(e) => set('referId', e.target.value)} className={control}><option value="">Direct / no Refer</option>{(options?.referralPartners ?? []).map((partner) => <option key={partner.id} value={partner.id}>{partner.name}</option>)}</select></label>
         </div>
         <p className="title-4">Passport (optional)</p>
         <div className="grid gap-4 sm:grid-cols-3">
@@ -106,20 +110,22 @@ export default function IntakePage() {
         </div>
       </>}
 
-      <p className="title-4">Application</p>
-      <div className="grid gap-4 sm:grid-cols-2">
-        <label className="title-4 flex flex-col gap-2">Position<select required value={form.positionId} onChange={(e) => set('positionId', e.target.value)} className={control}><option value="">Select an open position</option>{(positions ?? []).map((position) => <option key={position.id} value={position.id}>{position.label} · {position.employer} · {position.vacancies} vacancies · {position.currency} {position.agreedAmount}</option>)}</select></label>
-        <label className="title-4 flex flex-col gap-2">Source type<select value={form.sourceType} onChange={(e) => set('sourceType', e.target.value)} className={control}>{['DIRECT', 'REFERRED', 'UNKNOWN'].map((value) => <option key={value} value={value}>{value}</option>)}</select></label>
-        {form.sourceType === 'REFERRED' && <label className="title-4 flex flex-col gap-2">Agent / broker *<select required value={form.referralPartnerId} onChange={(e) => set('referralPartnerId', e.target.value)} className={control}><option value="">Select agent / broker</option>{(options?.referralPartners ?? []).map((partner) => <option key={partner.id} value={partner.id}>{partner.name}</option>)}</select></label>}
+      <p className="title-4">Applications · {selectedPositions.length} selected</p>
+      <Field id="position-search" label="Find an available position" type="search" placeholder="Search job, company, country or demand" value={positionQuery} onChange={(e) => setPositionQuery(e.target.value)} />
+      <div className="max-h-64 space-y-2 overflow-y-auto rounded-lg border border-line p-2">
+        {(positions ?? []).filter((position) => `${position.label} ${position.employer}`.toLowerCase().includes(positionQuery.trim().toLowerCase())).map((position) => <label key={position.id} className="flex cursor-pointer items-start gap-3 rounded-lg p-3 hover:bg-surface"><input type="checkbox" className="mt-1" checked={selectedPositions.includes(position.id)} onChange={(e) => setSelectedPositions((ids) => e.target.checked ? [...ids, position.id] : ids.filter((id) => id !== position.id))} /><span><span className="title-4 block">{position.label}</span><span className="caption-5 text-muted">{position.employer} · {position.vacancies} vacancies remaining · {position.currency} {position.agreedAmount}</span></span></label>)}
+        {!positions?.length && <p className="body-6 p-3 text-muted">No open positions with an available price and vacancies.</p>}
       </div>
+      {selectedPositions.length > 0 && <div className="flex flex-wrap gap-2" aria-label="Selected positions">{selectedPositions.map((id) => { const position = positions?.find((item) => item.id === id); return <button key={id} type="button" onClick={() => setSelectedPositions((ids) => ids.filter((selected) => selected !== id))} className="rounded-full border border-line px-3 py-1 caption-5">{position?.label} ×</button>; })}</div>}
+      {lookup?.found && <p className="body-6">Refer: {lookup.referName || 'Direct / no Refer'}</p>}
       {optionsError && <ErrorState message={optionsError} retry={reloadOptions} />}
       {positions?.length === 0 && <div className="body-6 text-muted">
-        <p>No open position yet. A job title in Recruitment Setup is only a name — create a recruitment demand with a position and an approved price.</p>
+        <p>No open position yet. Add a recruitment demand with a position and an initial price before starting an application.</p>
         {blockedPositions?.length ? <ul className="mt-2 list-inside list-disc">{blockedPositions.map((p) => <li key={p.id}>{p.jobTitle?.title ?? 'Position'} — {p.blockers?.length ? p.blockers.join('; ') : 'Price setup needs review'}</li>)}</ul> : <p className="mt-1">No positions have been created yet.</p>}
       </div>}
       {duplicates.length > 0 && <div className="rounded-lg border border-line bg-surface p-3"><p className="title-4">Possible existing candidates</p><ul className="mt-2 list-inside list-disc body-6">{duplicates.map((candidate) => <li key={candidate.id}>{candidate.fullName} · {candidate.candidateCode}</li>)}</ul></div>}
       {err && <p role="alert" className="body-6 text-danger">{err}</p>}
-      <div><Button type="submit" disabled={busy || optionsLoading || !positions?.length}>{busy ? 'Saving…' : lookup?.found ? 'Create application' : 'Create candidate & application'}</Button></div>
+      <div><Button type="submit" disabled={busy || optionsLoading || !selectedPositions.length}>{busy ? 'Saving…' : lookup?.found ? `Create ${selectedPositions.length} application${selectedPositions.length === 1 ? '' : 's'}` : 'Create applicant & applications'}</Button></div>
     </form>}
   </div>;
 }

@@ -26,11 +26,13 @@ export type ModuleDef = {
 };
 
 export const MODULES: ModuleDef[] = [
-  { key: 'candidates', title: 'Candidates', description: 'Register people and track their applications.', icon: Users, anyOf: ['candidate.read', 'candidate.create'], path: '/candidates' },
+  { key: 'countries', title: 'Countries', description: 'Organize destination countries by operating region.', icon: GlobeHemisphereWest, anyOf: ['catalogue.read', 'catalogue.manage'], path: '/countries' },
+  { key: 'agencies', title: 'Agencies', description: 'Manage overseas agencies and Refer sources separately.', icon: UsersThree, anyOf: ['catalogue.read', 'catalogue.manage'], path: '/agencies' },
+  { key: 'demands', title: 'Demands', description: 'Manage foreign recruitment demands, positions and selection progress.', icon: Wallet, anyOf: ['catalogue.read', 'catalogue.manage'], path: '/demands' },
+  { key: 'candidates', title: 'Applicants', description: 'Register people and track their recruitment history.', icon: Users, anyOf: ['candidate.read', 'candidate.create'], path: '/candidates' },
   { key: 'applications', title: 'Applications', description: 'Track each candidate application by position.', icon: FileText, anyOf: ['application.read'], path: '/applications' },
-  { key: 'catalogue', title: 'Catalogue', description: 'Countries, cities, employers, demands, and prices.', icon: GlobeHemisphereWest, anyOf: ['catalogue.read', 'catalogue.manage'], path: '/catalogue' },
   { key: 'finance', title: 'Finance', description: 'Receipts, expenses, commissions, settlements, and refunds.', icon: Wallet, anyOf: ['finance.receipt.read', 'finance.expense.read', 'finance.commission.manage', 'finance.settlement.prepare'], path: '/finance' },
-  { key: 'approvals', title: 'Approvals', description: 'Review pending approval requests.', icon: ListChecks, anyOf: ['application.read', 'catalogue.manage', 'finance.settlement.approve', 'finance.commission.approve', 'application.source_change_approve'], path: '/approvals' },
+  { key: 'approvals', title: 'Approvals', description: 'Review pending approval requests.', icon: ListChecks, anyOf: ['application.read', 'catalogue.approve', 'finance.settlement.approve', 'finance.commission.approve', 'application.source_change_approve'], path: '/approvals' },
   { key: 'users', title: 'Users', description: 'Manage user accounts and roles.', icon: UsersThree, anyOf: ['admin.users.manage'], path: '/users' },
   { key: 'audit', title: 'Audit log', description: 'Review recorded system activity.', icon: ShieldCheck, anyOf: ['audit.read'], path: '/audit' },
 ];
