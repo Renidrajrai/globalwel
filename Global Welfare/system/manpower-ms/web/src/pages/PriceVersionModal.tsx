@@ -9,6 +9,7 @@ const cx = {
 };
 const post = (path: string, body: unknown = {}) => api(path, { method: 'POST', body });
 const dateOf = (value: unknown) => (value ? String(value).slice(0, 10) : '');
+const today = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kathmandu', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
 
 function Modal({ title, onClose, children }: { title: string; onClose: () => void; children: ReactNode }) {
   return <div className="fixed inset-0 z-50 grid place-items-center bg-black/40 p-4" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}><div role="dialog" aria-modal="true" aria-label={title} className="rise max-h-[90vh] w-full max-w-[38.4rem] overflow-y-auto rounded-2xl border border-line bg-bg p-7 sm:p-8"><div className="flex items-start justify-between gap-4"><h2 className="heading-6">{title}</h2><button type="button" onClick={onClose} aria-label="Close" className="rounded-lg p-1 text-muted hover:text-fg">×</button></div>{children}</div></div>;
@@ -21,7 +22,7 @@ export function PriceVersionModal({ row, positionId: initialPositionId, initialP
   const [positions, setPositions] = useState<any[]>([]);
   const [positionId, setPositionId] = useState(row?.positionId ?? initialPositionId ?? '');
   const [currency, setCurrency] = useState(row?.currency ?? 'NPR');
-  const [from, setFrom] = useState(dateOf(row?.effectiveFrom));
+  const [from, setFrom] = useState(dateOf(row?.effectiveFrom) || (initialPrice ? today() : ''));
   const [to, setTo] = useState(dateOf(row?.effectiveTo));
   const [reason, setReason] = useState(row?.changeReason ?? (initialPrice ? 'Initial price' : ''));
   const [ref, setRef] = useState(row?.complianceReference ?? '');
@@ -54,7 +55,7 @@ export function PriceVersionModal({ row, positionId: initialPositionId, initialP
   const invalid = (!editing && !positionId) || !from || (!initialPrice && (reason.trim().length < 3 || !ref.trim())) || comps.some((c) => !c.componentType.trim());
 
   return (
-    <Modal title={editing ? 'Edit price draft' : 'Create price version'} onClose={() => onClose(false)}>
+    <Modal title={editing ? (initialPrice ? 'Review initial price' : 'Edit price draft') : (initialPrice ? 'Add initial price' : 'Create price version')} onClose={() => onClose(false)}>
       {err && <p role="alert" className="body-6 mt-2 text-danger">{err}</p>}
       <div className="mt-4 flex flex-col gap-4">
         {!editing && !initialPositionId && (

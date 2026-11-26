@@ -6,10 +6,12 @@ export const setCsrf = (token: string) => {
 export class ApiError extends Error {
   status: number;
   fields?: Record<string, string>;
-  constructor(status: number, message: string, fields?: Record<string, string>) {
+  requestId?: string;
+  constructor(status: number, message: string, fields?: Record<string, string>, requestId?: string) {
     super(message);
     this.status = status;
     this.fields = fields;
+    this.requestId = requestId;
   }
 }
 
@@ -26,6 +28,6 @@ export async function api<T>(path: string, opts: { method?: string; body?: unkno
     body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
   });
   const data = await res.json().catch(() => null);
-  if (!res.ok) throw new ApiError(res.status, data?.error ?? 'Something went wrong. Try again.', data?.fields);
+  if (!res.ok) throw new ApiError(res.status, data?.error ?? 'Something went wrong. Try again.', data?.fields, data?.requestId);
   return data as T;
 }

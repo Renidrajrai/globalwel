@@ -10,3 +10,18 @@ export const alpha2ToAlpha3 = new Map(pairs.map((pair) => {
   const [alpha2, alpha3] = pair.split(':');
   return [alpha2, alpha3] as const;
 }));
+
+const regionNames = new Intl.DisplayNames(['en'], { type: 'region' });
+const nameToAlpha2 = new Map([...alpha2ToAlpha3.keys()].map((code) => [
+  regionNames.of(code)!.normalize('NFKC').toLowerCase(), code,
+]));
+const countryAliases: Record<string, string> = { uk: 'GB', 'united kingdom': 'GB', uae: 'AE', 'united arab emirates': 'AE' };
+
+export function resolveCountryName(raw: string): { iso2: string; iso3: string; name: string } | null {
+  const name = raw.normalize('NFKC').trim().replace(/\s+/g, ' ');
+  const normalized = name.toLowerCase();
+  if (['congo', 'korea'].includes(normalized)) return null;
+  const iso2 = countryAliases[normalized] ?? nameToAlpha2.get(normalized);
+  const iso3 = iso2 && alpha2ToAlpha3.get(iso2);
+  return iso2 && iso3 ? { iso2, iso3, name: regionNames.of(iso2) ?? name } : null;
+}

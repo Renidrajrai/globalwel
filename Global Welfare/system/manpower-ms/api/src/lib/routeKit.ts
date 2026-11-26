@@ -13,6 +13,7 @@ export const h =
       if (err instanceof Prisma.PrismaClientKnownRequestError) {
         if (err.code === 'P2025') return res.status(404).json({ error: 'Record not found.' });
         if (err.code === 'P2002') return res.status(409).json({ error: 'A record with these details already exists.' });
+        if (err.code === 'P2023') return res.status(400).json({ error: 'Invalid identifier.' });
         if (err.code === 'P2003' || err.code === 'P2014') return res.status(400).json({ error: 'A related record does not exist.' });
       }
       next(err);

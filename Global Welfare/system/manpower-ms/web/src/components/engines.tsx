@@ -1,5 +1,5 @@
-import { useState, type JSX, type ReactNode } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useEffect, useState, type JSX, type ReactNode } from 'react';
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { useAuth } from '../auth/AuthContext';
 import { ApiError } from '../lib/api';
 import { postJson, useOne, useResource } from '../lib/useApi';
@@ -8,10 +8,10 @@ import { Field } from './Field';
 import { EmptyState, ErrorState, FormDialog, PageHeader, ReasonDialog, SkeletonRows } from './ui';
 import type { FormDef } from './ui';
 
-export type Col<T> = { header: string; cell: (row: T) => ReactNode; perm?: string[] };
+export type Col<T> = { header: string; cell: (row: T) => ReactNode; perm?: string[]; mobile?: boolean; className?: string };
 export type FilterDef = { key: string; label: string; type?: 'search' | 'select' | 'date'; options?: { value: string; label: string }[] };
 export type RowAction<T> = {
-  label: string;
+  label: string | ((row: T) => string);
   kind?: 'navigate' | 'post';
   path?: (row: T) => string;
   to?: (row: T) => string;
@@ -37,6 +37,12 @@ export type ListCfg<T> = {
   empty: { title: string; hint?: string };
   embedded?: boolean;
   pageSize?: number;
+  searchPlaceholder?: string;
+  wideSearch?: boolean;
+  responsive?: boolean;
+  actionMenu?: boolean;
+  preserveQuery?: boolean;
+  refreshKey?: number;
 };
 
 const controlClass =
@@ -48,10 +54,11 @@ function errorText(err: unknown): string {
 
 export function ListPage<T extends { id: string }>({ cfg }: { cfg: ListCfg<T> }): JSX.Element {
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const { can } = useAuth();
   const [page, setPage] = useState(1);
-  const [q, setQ] = useState('');
-  const [filters, setFilters] = useState<Record<string, string>>({});
+  const [q, setQ] = useState(() => cfg.preserveQuery ? searchParams.get('q') ?? '' : '');
+  const [filters, setFilters] = useState<Record<string, string>>(() => Object.fromEntries((cfg.filters ?? []).map((filter) => [filter.key, cfg.preserveQuery ? searchParams.get(filter.key) ?? '' : ''])));
   const [formOpen, setFormOpen] = useState(false);
   const [reasonTarget, setReasonTarget] = useState<{ action: RowAction<T>; row: T } | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -60,12 +67,22 @@ export function ListPage<T extends { id: string }>({ cfg }: { cfg: ListCfg<T> })
   const params: Record<string, string | number | boolean | undefined> = { ...cfg.fixed, ...filters };
   if (q.trim()) params.q = q.trim();
   const pageSize = cfg.pageSize ?? 20;
-  const { data, total, loading, error, reload } = useResource<T>(cfg.resource, params, page, pageSize);
+  const { data, total, loading, error, reload } = useResource<T>(cfg.resource, params, page, pageSize, cfg.refreshKey);
   const columns = cfg.columns.filter((col) => !col.perm || can(...col.perm));
   const actions = (cfg.rowActions ?? []).filter((action) => !action.perm || can(...action.perm));
   const pageCount = Math.max(1, Math.ceil(total / pageSize));
   const primary = cfg.primary && (!cfg.primary.perm || can(...cfg.primary.perm)) ? cfg.primary : null;
   const rowTo = cfg.rowTo;
+  const actionLabel = (action: RowAction<T>, row: T) => typeof action.label === 'function' ? action.label(row) : action.label;
+  useEffect(() => {
+    if (!cfg.preserveQuery) return;
+    const next = new URLSearchParams();
+    if (q.trim()) next.set('q', q.trim());
+    Object.entries(filters).forEach(([key, value]) => { if (value) next.set(key, value); });
+    if (next.toString() !== searchParams.toString()) setSearchParams(next, { replace: true });
+  }, [cfg.preserveQuery, q, filters]);
+  const listQuery = new URLSearchParams({ ...(q.trim() ? { q: q.trim() } : {}), ...Object.fromEntries(Object.entries(filters).filter(([, value]) => value)) }).toString();
+  const detailPath = (row: T) => `${rowTo?.(row) ?? ''}${cfg.preserveQuery && listQuery ? `?${listQuery}` : ''}`;
 
   async function runAction(action: RowAction<T>, row: T, reason?: string) {
     setActionError(null);
@@ -81,7 +98,7 @@ export function ListPage<T extends { id: string }>({ cfg }: { cfg: ListCfg<T> })
       setReasonTarget({ action, row });
       return;
     }
-    if (action.confirmTitle && !window.confirm(action.confirmTitle ?? action.label)) return;
+    if (action.confirmTitle && !window.confirm(action.confirmTitle)) return;
     const body = action.body?.(row) ?? {};
     try {
       await postJson(action.path?.(row) ?? '', reason === undefined ? body : { ...body, reason }, action.method ?? 'POST');
@@ -118,12 +135,12 @@ export function ListPage<T extends { id: string }>({ cfg }: { cfg: ListCfg<T> })
       )}
 
       <div className="mt-6 flex flex-wrap items-end gap-3">
-        <div className="w-full sm:w-56">
+        <div className={cfg.wideSearch ? 'w-full sm:flex-1 sm:min-w-[24rem]' : 'w-full sm:w-56'}>
           <Field
             id="list-q"
             label="Search"
             type="search"
-            placeholder="Search"
+            placeholder={cfg.searchPlaceholder ?? 'Search'}
             value={q}
             onChange={(e) => {
               setQ(e.target.value);
@@ -169,24 +186,27 @@ export function ListPage<T extends { id: string }>({ cfg }: { cfg: ListCfg<T> })
             )}
           </div>
         ))}
+        {(q || Object.values(filters).some(Boolean)) && <Button variant="ghost" size="sm" onClick={() => { setQ(''); setFilters({}); setPage(1); }}>Clear filters</Button>}
         {cfg.embedded && primary?.form && <div className="ml-auto"><Button onClick={() => setFormOpen(true)}>{primary.label}</Button></div>}
       </div>
 
       <div className="mt-4">
         {loading ? (
           <SkeletonRows rows={pageSize > 10 ? 10 : pageSize} />
-        ) : error ? (
+        ) : error && data.length === 0 ? (
           <ErrorState message={error} retry={reload} />
         ) : data.length === 0 ? (
           <EmptyState title={cfg.empty.title} hint={cfg.empty.hint} />
         ) : (
+          <>{error && <p role="alert" className="body-6 mb-2 text-danger">{error}</p>}
           <div className="overflow-hidden rounded-2xl border border-line">
             <div className="w-full overflow-x-auto">
-              <table className="w-full min-w-[36rem] border-collapse text-left">
+              {cfg.responsive && <div className="divide-y divide-line sm:hidden">{data.map((row) => <article key={row.id} className="p-4" tabIndex={rowTo ? 0 : undefined} onClick={rowTo ? () => navigate(detailPath(row)) : undefined} onKeyDown={rowTo ? (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); navigate(detailPath(row)); } } : undefined}><div className="space-y-3">{columns.filter((col) => col.mobile !== false).map((col, index) => <div key={col.header} className={index === 0 ? 'text-base font-medium' : 'flex justify-between gap-4'}><span className={index === 0 ? 'sr-only' : 'caption-5 text-muted'}>{col.header}</span><div className={index === 0 ? '' : 'text-right'}>{col.cell(row)}</div></div>)}{actions.length > 0 && <details className="pt-1" onClick={(e) => e.stopPropagation()}><summary className="button-sm w-fit cursor-pointer rounded-lg border border-line px-4 py-2.5 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-fg">Actions</summary><div className="mt-2 grid justify-items-end gap-1">{actions.filter((action) => !action.when || action.when(row)).map((action) => <Button key={actionLabel(action, row)} variant="secondary" size="sm" className="w-full justify-end text-right" onClick={() => void runAction(action, row)}>{actionLabel(action, row)}</Button>)}</div></details>}</div></article>)}</div>}
+              <table className={`${cfg.responsive ? 'hidden table-fixed sm:table' : 'table'} w-full ${cfg.responsive ? '' : 'min-w-[36rem]'} border-collapse text-left`}>
                 <thead className="bg-surface">
                   <tr>
                     {columns.map((col) => (
-                      <th key={col.header} scope="col" className="caption-4 p-3">
+                      <th key={col.header} scope="col" className={`caption-4 p-3 ${col.className ?? ''}`}>
                         {col.header}
                       </th>
                     ))}
@@ -202,13 +222,13 @@ export function ListPage<T extends { id: string }>({ cfg }: { cfg: ListCfg<T> })
                     <tr
                       key={row.id}
                       tabIndex={rowTo ? 0 : undefined}
-                      onClick={rowTo ? () => navigate(rowTo(row)) : undefined}
+                      onClick={rowTo ? () => navigate(detailPath(row)) : undefined}
                       onKeyDown={
                         rowTo
                           ? (e) => {
                               if (e.key === 'Enter' || e.key === ' ') {
                                 e.preventDefault();
-                                navigate(rowTo(row));
+                                navigate(detailPath(row));
                               }
                             }
                           : undefined
@@ -219,29 +239,13 @@ export function ListPage<T extends { id: string }>({ cfg }: { cfg: ListCfg<T> })
                       ].join(' ')}
                     >
                       {columns.map((col) => (
-                        <td key={col.header} className="body-6 p-3 align-top">
+                        <td key={col.header} className={`body-6 break-words p-3 align-top ${col.className ?? ''}`}>
                           {col.cell(row)}
                         </td>
                       ))}
                       {actions.length > 0 && (
                         <td className="p-3 text-right align-top">
-                          <div className="flex flex-wrap justify-end gap-1">
-                            {actions
-                              .filter((action) => !action.when || action.when(row))
-                              .map((action) => (
-                                <Button
-                                  key={action.label}
-                                  variant="ghost"
-                                  size="sm"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    void runAction(action, row);
-                                  }}
-                                >
-                                  {action.label}
-                                </Button>
-                              ))}
-                          </div>
+                          {cfg.actionMenu ? <details className="relative inline-block text-left" onClick={(e) => e.stopPropagation()}><summary className="button-sm cursor-pointer rounded-lg border border-line px-4 py-2.5 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-fg">Actions</summary><div className="absolute right-0 z-10 mt-1 grid min-w-48 gap-1 rounded-lg border border-line bg-bg p-2 shadow-lg">{actions.filter((action) => !action.when || action.when(row)).map((action) => <Button key={actionLabel(action, row)} variant="ghost" size="sm" className="w-full justify-end px-3 py-2 text-right" onClick={(e) => { e.stopPropagation(); void runAction(action, row); }}>{actionLabel(action, row)}</Button>)}</div></details> : <div className="flex flex-wrap justify-end gap-1">{actions.filter((action) => !action.when || action.when(row)).map((action) => <Button key={actionLabel(action, row)} variant="ghost" size="sm" onClick={(e) => { e.stopPropagation(); void runAction(action, row); }}>{actionLabel(action, row)}</Button>)}</div>}
                         </td>
                       )}
                     </tr>
@@ -249,11 +253,11 @@ export function ListPage<T extends { id: string }>({ cfg }: { cfg: ListCfg<T> })
                 </tbody>
               </table>
             </div>
-          </div>
+          </div></>
         )}
       </div>
 
-      {total > 0 && !loading && !error && (
+      {total > 0 && !loading && (
         <nav aria-label="Pagination" className="mt-4 flex flex-wrap items-center justify-between gap-3">
           <Button variant="secondary" size="sm" disabled={page <= 1} onClick={() => setPage((p) => Math.max(1, p - 1))}>
             Previous
@@ -272,7 +276,7 @@ export function ListPage<T extends { id: string }>({ cfg }: { cfg: ListCfg<T> })
       )}
       <ReasonDialog
         open={!!reasonTarget}
-        title={reasonTarget?.action.label ?? 'Confirm'}
+        title={reasonTarget && actionLabel(reasonTarget.action, reasonTarget.row) || 'Confirm'}
         onClose={() => setReasonTarget(null)}
         onSubmit={async (reason) => {
           if (!reasonTarget) return;

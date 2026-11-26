@@ -48,7 +48,7 @@ export default function IntakePage() {
 
   async function doLookup(e: FormEvent) {
     e.preventDefault(); setErr(null); setBusy(true); setLookup(null);
-    try { const result = await postJson<Lookup>('/intake/passport-lookup', { passportNumber, issuingCountryId: form.issuingCountryId || null }); setLookup(result); setForm((current) => ({ ...current, referId: result.referId ?? '' })); }
+    try { const { data: result } = await postJson<{ data: Lookup }>('/intake/passport-lookup', { passportNumber, issuingCountryId: form.issuingCountryId || null }); setLookup(result); setForm((current) => ({ ...current, referId: result.referId ?? '' })); }
     catch (e) { setErr(e instanceof ApiError ? e.message : 'Passport lookup failed. Try again.'); }
     finally { setBusy(false); }
   }

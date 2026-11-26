@@ -10,9 +10,8 @@ import { useResource } from '../lib/useApi';
 const regionOptions = [{ value: 'EUROPE', label: 'Europe' }, { value: 'GULF', label: 'Gulf' }];
 const countryForm = {
   title: 'Add country', path: '/resource/countries', fields: [
-    { name: 'iso3Code', label: 'ISO country code (3 letters)', required: true },
     { name: 'name', label: 'Country name', required: true },
-    { name: 'region', label: 'Operating region', type: 'select' as const, required: true, options: regionOptions },
+    { name: 'region', label: 'Region (optional)', type: 'select' as const, options: regionOptions },
   ],
 };
 const countryEditForm = {
@@ -21,13 +20,14 @@ const countryEditForm = {
   ],
 };
 
-function CountryCard({ row, canManage, move, reload }: { row: any; canManage: boolean; move: (id: string, region: string | null, beforeId?: string) => Promise<void>; reload: () => void }): JSX.Element {
+function CountryCard({ row, canManage, move, reload, mutate }: { row: any; canManage: boolean; move: (id: string, region: string | null, beforeId?: string) => Promise<void>; reload: () => void; mutate: (id: string, patch: any) => void }): JSX.Element {
   const [editing, setEditing] = useState(false);
+  const [busy, setBusy] = useState(false);
   return <article draggable={canManage} onDragStart={(e) => { e.dataTransfer.setData('text/plain', row.id); e.dataTransfer.effectAllowed = 'move'; }} onDragOver={(e) => e.preventDefault()} onDrop={(e) => { e.preventDefault(); const id = e.dataTransfer.getData('text/plain'); if (id && id !== row.id) void move(id, row.region ?? null, row.id); }} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-line bg-bg p-4">
     <div className="min-w-0"><p className="title-3">{row.name}</p><p className="caption-5 mt-1 text-muted">{row.iso3Code ?? row.iso2Code} · {row.active ? 'Active' : 'Inactive'}</p></div>
     <div className="flex flex-wrap items-center gap-2">
       {canManage && <label className="caption-5 flex items-center gap-2">Move to <select aria-label={`Move ${row.name} to a region`} className="body-6 rounded-lg border border-line bg-bg px-2 py-1" value={row.region ?? ''} onChange={(e) => void move(row.id, e.target.value || null)}><option value="">Unassigned</option>{regionOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>}
-      {canManage && <><Button size="sm" variant="secondary" onClick={() => setEditing(true)}>Edit</Button><Button size="sm" variant="ghost" onClick={async () => { await api(`/resource/countries/${row.id}`, { method: 'PATCH', body: { active: !row.active } }); reload(); }}>{row.active ? 'Deactivate' : 'Activate'}</Button></>}
+      {canManage && <><Button size="sm" variant="secondary" onClick={() => setEditing(true)}>Edit</Button><Button size="sm" variant="ghost" disabled={busy} onClick={async () => { setBusy(true); try { const result = await api<{ data: any }>(`/resource/countries/${row.id}`, { method: 'PATCH', body: { active: !row.active } }); mutate(row.id, { active: result.data.active }); } catch { reload(); } finally { setBusy(false); } }}>{row.active ? 'Deactivate' : 'Activate'}</Button></>}
     </div>
     {editing && <FormDialog open form={{ ...countryEditForm, path: `/resource/countries/${row.id}` }} initial={{ name: row.name }} onClose={() => setEditing(false)} onSaved={() => { setEditing(false); reload(); }} />}
   </article>;
@@ -36,17 +36,19 @@ function CountryCard({ row, canManage, move, reload }: { row: any; canManage: bo
 export function CountriesPage(): JSX.Element {
   const { can } = useAuth();
   const canRead = can('catalogue.read', 'catalogue.manage'); const canManage = can('catalogue.manage');
-  const { data, loading, error, reload } = useResource<any>('countries', {}, 1, 200);
+  const { data, loading, error, reload, mutate, setData } = useResource<any>('countries', {}, 1, 200);
   const [addOpen, setAddOpen] = useState(false); const [query, setQuery] = useState(''); const [moveError, setMoveError] = useState('');
   if (!canRead) return <EmptyState title="You do not have access to this page." hint="Ask an administrator if you need access." />;
   const visible = data.filter((row) => !query.trim() || `${row.name} ${row.iso3Code}`.toLowerCase().includes(query.trim().toLowerCase()));
   async function move(id: string, region: string | null, beforeId?: string) {
     const row = data.find((item) => item.id === id); if (!row || !canManage) return;
-    const target = data.filter((item) => item.region === region && item.id !== id).sort((a, b) => a.displayOrder - b.displayOrder || a.name.localeCompare(b.name));
+    const target = data.filter((item) => (item.region ?? null) === region && item.id !== id).sort((a, b) => a.displayOrder - b.displayOrder || a.name.localeCompare(b.name));
     const at = beforeId ? target.findIndex((item) => item.id === beforeId) : -1;
     target.splice(at < 0 ? target.length : at, 0, { ...row, region });
-    try { await Promise.all(target.map((item, index) => api(`/resource/countries/${item.id}`, { method: 'PATCH', body: { region, displayOrder: (index + 1) * 10 } }))); reload(); setMoveError(''); }
-    catch (e) { setMoveError(e instanceof Error ? e.message : 'Could not save the country order.'); }
+    const previous = data; const orderedIds = target.map((item) => item.id); const next = data.map((item) => { const index = orderedIds.indexOf(item.id); return index < 0 ? item : { ...item, region, displayOrder: (index + 1) * 10 }; });
+    setData(next);
+    try { await api('/resource/countries/reorder', { method: 'POST', body: { region, orderedIds } }); setMoveError(''); }
+    catch (e) { setData(previous); setMoveError(e instanceof Error ? e.message : 'Could not save the country order.'); }
   }
   return <div>
     <PageHeader title="Countries" hint="Group destination countries under Europe or Gulf. Drag to reorder, or use Move to for keyboard and touch." actions={canManage ? <Button onClick={() => setAddOpen(true)}>Add country</Button> : undefined} />
@@ -57,7 +59,7 @@ export function CountriesPage(): JSX.Element {
         const rows = visible.filter((row) => (row.region ?? '') === code).sort((a, b) => a.displayOrder - b.displayOrder || a.name.localeCompare(b.name));
         return <section key={code || 'unassigned'} onDragOver={(e) => e.preventDefault()} onDrop={(e) => { e.preventDefault(); const id = e.dataTransfer.getData('text/plain'); if (id) void move(id, code || null); }} aria-label={`${title} countries`} className="rounded-xl border border-line p-4">
           <div className="mb-3 flex items-baseline justify-between"><h2 className="title-2">{title}</h2><span className="caption-5 text-muted">{rows.length}</span></div>
-          {rows.length ? <div className="space-y-2">{rows.map((row) => <CountryCard key={row.id} row={row} canManage={canManage} move={move} reload={reload} />)}</div> : <p className="body-6 py-3 text-muted">Drop countries here or move one using its menu.</p>}
+          {rows.length ? <div className="space-y-2">{rows.map((row) => <CountryCard key={row.id} row={row} canManage={canManage} move={move} reload={reload} mutate={mutate} />)}</div> : <p className="body-6 py-3 text-muted">Drop countries here or move one using its menu.</p>}
         </section>;
       })}
     </div>}
@@ -75,26 +77,45 @@ function ReferDetail(): JSX.Element {
   ] }} />;
 }
 
+function AgencyCompaniesTab({ id }: { id: string }): JSX.Element {
+  const [linkOpen, setLinkOpen] = useState(false);
+  const [revision, setRevision] = useState(0);
+  return <>
+    <div className="mb-3 flex justify-end"><Button size="sm" variant="secondary" onClick={() => setLinkOpen(true)}>Link existing company</Button></div>
+    <ListPage cfg={{ refreshKey: revision, title: 'Associated companies', hint: 'Companies linked to this agency.', resource: 'employers', fixed: { overseasAgencyId: id }, columns: [
+      { header: 'Company', cell: (company: any) => company.legalName },
+      { header: 'Destination', cell: (company: any) => company.destinationCountries?.map((link: any) => link.country.name).join(', ') || '—' },
+      { header: 'Active', cell: (company: any) => company.active ? 'Yes' : 'No' },
+    ], rowTo: (company: any) => `/companies/${company.id}`, rowActions: [
+      { label: 'Edit company', perm: ['catalogue.manage'], form: (company: any) => ({ title: 'Edit company', path: `/resource/employers/${company.id}`, method: 'PATCH', fields: [{ name: 'legalName', label: 'Company name', required: true }, { name: 'contactName', label: 'Contact person' }, { name: 'email', label: 'Email' }, { name: 'phone', label: 'Phone' }] }), initial: (company: any) => company },
+      { label: 'Toggle active', method: 'PATCH', path: (company: any) => `/resource/employers/${company.id}`, body: (company: any) => ({ active: !company.active }), perm: ['catalogue.manage'] },
+    ], primary: { label: 'Add company', perm: ['catalogue.manage'], form: { title: 'Add company to agency', path: `/resource/overseas-agencies/${id}/companies`, fields: [
+      { name: 'legalName', label: 'Company name', required: true }, { name: 'destinationCountryId', label: 'Destination country', type: 'select', required: true, optionsResource: { resource: 'countries', params: { active: 'true' }, label: (country: any) => country.name } },
+      { name: 'contactName', label: 'Contact person' }, { name: 'email', label: 'Email' }, { name: 'phone', label: 'Phone' },
+    ] } }, empty: { title: 'No companies have been added to this agency yet.' } }} />
+    {linkOpen && <FormDialog open form={{ title: 'Link existing company', path: `/resource/overseas-agencies/${id}/companies/link`, fields: [
+      { name: 'employerId', label: 'Company', type: 'select', required: true, optionsResource: { resource: 'employers', params: { active: 'true' }, label: (company: any) => company.legalName } },
+    ] }} onClose={() => setLinkOpen(false)} onSaved={() => { setLinkOpen(false); setRevision((value) => value + 1); }} />}
+  </>;
+}
+
 function OverseasAgencyDetail(): JSX.Element {
   const { id = '' } = useParams();
   return <DetailPage cfg={{ resource: 'overseas-agencies', title: (row) => row.name, hint: (row) => `Overseas agency · ${row.country?.name ?? 'Country not set'}`, fields: [
     { label: 'Country', value: (row) => row.country?.name || 'None' }, { label: 'Contact person', value: (row) => row.contactName || 'None' },
     { label: 'Phone', value: (row) => row.phone || 'None' }, { label: 'Email', value: (row) => row.email || 'None' }, { label: 'Notes', value: (row) => row.notes || 'None' },
   ], tabs: [
-    { key: 'companies', label: 'Companies & Job Titles', render: () => <ListPage cfg={{ title: 'Associated companies', hint: 'Add companies and manage their job titles here.', resource: 'employers', fixed: { overseasAgencyId: id }, columns: [
-      { header: 'Company', cell: (company: any) => company.legalName },
-      { header: 'Destination', cell: (company: any) => company.destinationCountries?.map((link: any) => link.country.name).join(', ') || '—' },
-      { header: 'Job titles', cell: (company: any) => company.jobTitles?.map((link: any) => link.jobTitle.title).join(', ') || 'None yet' },
-      { header: 'Active', cell: (company: any) => company.active ? 'Yes' : 'No' },
-    ], rowTo: (company: any) => `/companies/${company.id}`, rowActions: [
-      { label: 'Add job title', perm: ['catalogue.manage'], form: (company: any) => ({ title: `Add or reuse job title · ${company.legalName}`, path: `/resource/employers/${company.id}/job-titles`, fields: [{ name: 'title', label: 'Job title', required: true }] }) },
-      { label: 'Edit company', perm: ['catalogue.manage'], form: (company: any) => ({ title: 'Edit company', path: `/resource/employers/${company.id}`, method: 'PATCH', fields: [{ name: 'legalName', label: 'Company name', required: true }, { name: 'contactName', label: 'Contact person' }, { name: 'email', label: 'Email' }, { name: 'phone', label: 'Phone' }] }), initial: (company: any) => company },
-      { label: 'Toggle active', method: 'PATCH', path: (company: any) => `/resource/employers/${company.id}`, body: (company: any) => ({ active: !company.active }), perm: ['catalogue.manage'] },
-    ], primary: { label: 'Add company', perm: ['catalogue.manage'], form: { title: 'Add company to agency', path: `/resource/overseas-agencies/${id}/companies`, fields: [
-      { name: 'legalName', label: 'Company name', required: true }, { name: 'destinationCountryId', label: 'Destination country', type: 'select', optionsResource: { resource: 'countries', params: { active: 'true' }, label: (country: any) => country.name } },
-      { name: 'contactName', label: 'Contact person' }, { name: 'email', label: 'Email' }, { name: 'phone', label: 'Phone' },
-    ] } }, empty: { title: 'No companies linked yet.' } }} /> },
-    { key: 'demands', label: 'Demands', render: () => <ListPage cfg={{ title: 'Agency demands', resource: 'demands', fixed: { overseasAgencyId: id }, columns: [{ header: 'Demand', cell: (row: any) => row.reference }, { header: 'Country', cell: (row: any) => row.destinationCountry?.name }, { header: 'Company', cell: (row: any) => row.employer?.legalName }, { header: 'Workers requested', cell: (row: any) => (row.positions ?? []).reduce((total: number, position: any) => total + position.vacancies, 0) }], rowTo: (row: any) => `/demands/${row.id}`, empty: { title: 'No demands from this agency yet.' } }} /> },
+    { key: 'companies', label: 'Companies & Job Titles', render: () => <AgencyCompaniesTab id={id} /> },
+    { key: 'demands', label: 'Demands', render: () => <ListPage cfg={{ title: 'Agency demands', resource: 'demands', fixed: { overseasAgencyId: id }, columns: [
+      { header: 'Demand', cell: (row: any) => row.reference },
+      { header: 'Company', cell: (row: any) => row.employer?.legalName || '—' },
+      { header: 'Country', cell: (row: any) => row.destinationCountry?.name || '—' },
+      { header: 'Positions', cell: (row: any) => (row.positions ?? []).map((position: any) => `${position.jobTitle?.title} · ${position.vacancies}`).join(', ') || '—' },
+      { header: 'Requested', cell: (row: any) => (row.positions ?? []).reduce((sum: number, position: any) => sum + position.vacancies, 0) },
+      { header: 'Selected', cell: (row: any) => (row.positions ?? []).reduce((sum: number, position: any) => sum + (position.applications?.length ?? 0), 0) },
+      { header: 'Remaining', cell: (row: any) => { const positions = row.positions ?? []; const requested = positions.reduce((sum: number, position: any) => sum + position.vacancies, 0); const selected = positions.reduce((sum: number, position: any) => sum + (position.applications?.length ?? 0), 0); return Math.max(0, requested - selected); } },
+      { header: 'Status', cell: (row: any) => row.active ? 'Active' : 'Inactive' },
+    ], rowTo: (row: any) => `/demands/${row.id}`, empty: { title: 'No recruitment demands are linked to this agency yet.' } }} /> },
   ] }} />;
 }
 
@@ -140,23 +161,17 @@ function CompanyDetail(): JSX.Element {
 }
 
 export function CompaniesPage(): JSX.Element {
-  const { can } = useAuth(); const { id } = useParams(); const [tab, setTab] = useState('companies');
+  const { can } = useAuth(); const { id } = useParams();
   const [revision, setRevision] = useState(0);
   const countries = useResource<any>('countries', {}, 1, 200).data; const agencies = useResource<any>('overseas-agencies', {}, 1, 200).data;
   if (!can('catalogue.read', 'catalogue.manage')) return <EmptyState title="You do not have access to this page." />;
   if (id) return <CompanyDetail />;
-  return <div><PageHeader title="Companies & Job Titles" hint="Manage overseas employers, their agency relationships, and reusable job titles." />
-    <div role="tablist" aria-label="Company setup" className="mb-5 flex gap-2 border-b border-line pb-2">{[['companies', 'Companies'], ['titles', 'Job Titles']].map(([key, label]) => <Button key={key} role="tab" aria-selected={tab === key} variant={tab === key ? 'primary' : 'ghost'} onClick={() => setTab(key)}>{label}</Button>)}</div>
-    {tab === 'companies' ? <ListPage key={revision} cfg={{ title: 'Companies', resource: 'employers', columns: [
+  return <div><PageHeader title="Companies" hint="Manage overseas employers and their agency relationships." />
+    <ListPage cfg={{ refreshKey: revision, title: 'Companies', resource: 'employers', columns: [
       { header: 'Company', cell: (row: any) => row.legalName }, { header: 'Registered country', cell: (row: any) => row.registeredCountry?.name || '—' }, { header: 'Destinations', cell: (row: any) => (row.destinationCountries ?? []).map((link: any) => link.country.name).join(', ') || 'Not set' }, { header: 'Overseas agencies', cell: (row: any) => (row.overseasAgencies ?? []).map((link: any) => link.overseasAgency.name).join(', ') || 'Not set' }, { header: 'Contact', cell: (row: any) => row.contactName || row.email || row.phone || '—' }, { header: 'Links', cell: (row: any) => <CompanyRelationships row={row} countries={countries} agencies={agencies} onSaved={() => setRevision((value) => value + 1)} /> },
     ], rowTo: (row: any) => `/companies/${row.id}`, rowActions: [
       { label: 'Edit', perm: ['catalogue.manage'], form: (row: any) => ({ title: 'Edit company', path: `/resource/employers/${row.id}`, method: 'PATCH', fields: [{ name: 'legalName', label: 'Company name', required: true }, { name: 'contactName', label: 'Contact person' }, { name: 'email', label: 'Email' }, { name: 'phone', label: 'Phone' }] }), initial: (row: any) => row },
       { label: 'Toggle active', method: 'PATCH', path: (row: any) => `/resource/employers/${row.id}`, body: (row: any) => ({ active: !row.active }), perm: ['catalogue.manage'] },
-    ], primary: { label: 'Add company', perm: ['catalogue.manage'], form: { title: 'Add company', path: '/resource/employers', fields: [{ name: 'legalName', label: 'Company name', required: true }, { name: 'registeredCountryId', label: 'Registered country', type: 'select', required: true, optionsResource: { resource: 'countries', label: (row: any) => row.name } }, { name: 'contactName', label: 'Contact person' }, { name: 'email', label: 'Email' }, { name: 'phone', label: 'Phone' }] } }, empty: { title: 'No companies have been added yet.' } }} /> : <ListPage cfg={{ title: 'Job Titles', resource: 'job-titles', columns: [
-      { header: 'Job title', cell: (row: any) => row.title }, { header: 'Description', cell: (row: any) => row.description || '—' }, { header: 'Active', cell: (row: any) => row.active ? 'Yes' : 'No' },
-    ], rowActions: [
-      { label: 'Edit', perm: ['catalogue.manage'], form: (row: any) => ({ title: 'Edit job title', path: `/resource/job-titles/${row.id}`, method: 'PATCH', fields: [{ name: 'title', label: 'Job title', required: true }, { name: 'description', label: 'Description', type: 'textarea' }] }), initial: (row: any) => row },
-      { label: 'Toggle active', method: 'PATCH', path: (row: any) => `/resource/job-titles/${row.id}`, body: (row: any) => ({ active: !row.active }), perm: ['catalogue.manage'] },
-    ], primary: { label: 'Add job title', perm: ['catalogue.manage'], form: { title: 'Add job title', path: '/resource/job-titles', fields: [{ name: 'title', label: 'Job title', required: true }, { name: 'description', label: 'Description', type: 'textarea' }] } }, empty: { title: 'No job titles have been added yet.' } }} />}
+    ], primary: { label: 'Add company', perm: ['catalogue.manage'], form: { title: 'Add company', path: '/resource/employers', fields: [{ name: 'legalName', label: 'Company name', required: true }, { name: 'registeredCountryId', label: 'Registered country', type: 'select', required: true, optionsResource: { resource: 'countries', label: (row: any) => row.name } }, { name: 'contactName', label: 'Contact person' }, { name: 'email', label: 'Email' }, { name: 'phone', label: 'Phone' }] } }, empty: { title: 'No companies have been added yet.' } }} />
   </div>;
 }

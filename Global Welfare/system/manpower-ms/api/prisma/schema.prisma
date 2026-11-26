@@ -301,6 +301,7 @@ model EmployerOverseasAgency {
   createdAt        DateTime       @default(now()) @map("created_at") @db.Timestamptz(3)
   employer         Employer       @relation(fields: [employerId], references: [id])
   overseasAgency   OverseasAgency @relation(fields: [overseasAgencyId], references: [id])
+  demands          JobDemand[]    @relation("DemandEmployerAgency")
 
   @@id([employerId, overseasAgencyId])
   @@index([overseasAgencyId])
@@ -322,6 +323,7 @@ model JobDemand {
   createdAt            DateTime        @default(now()) @map("created_at") @db.Timestamptz(3)
   employer             Employer        @relation(fields: [employerId], references: [id])
   overseasAgency       OverseasAgency? @relation(fields: [overseasAgencyId], references: [id])
+  employerAgency       EmployerOverseasAgency? @relation("DemandEmployerAgency", fields: [employerId, overseasAgencyId], references: [employerId, overseasAgencyId], map: "fk_demand_employer_agency")
   destinationCountry   Country         @relation(fields: [destinationCountryId], references: [id])
   positions            JobPosition[]
 
@@ -476,7 +478,7 @@ model Application {
   installments         ApplicationInstallment[]
   payments             CandidatePayment[]
   expenseAllocations   ExpenseAllocation[]
-  commission           PartnerCommission?
+  commission           PartnerCommission?       @relation("CommissionSamePartner")
   settlements          CandidateSettlement[]
 
   @@unique([id, referralPartnerId])
@@ -566,7 +568,7 @@ model ApplicationInstallment {
   dueOn          DateTime?          @map("due_on") @db.Date
   createdAt      DateTime           @default(now()) @map("created_at") @db.Timestamptz(3)
   application    Application        @relation(fields: [applicationId], references: [id])
-  payments       CandidatePayment[]
+  payments       CandidatePayment[] @relation("PaymentSameApplication")
 
   @@unique([applicationId, seq])
   @@unique([id, applicationId])
@@ -592,7 +594,7 @@ model CandidatePayment {
   verifiedById      String?                 @map("verified_by_id") @db.Uuid
   createdAt         DateTime                @default(now()) @map("created_at") @db.Timestamptz(3)
   application       Application             @relation(fields: [applicationId], references: [id])
-  installment       ApplicationInstallment? @relation(fields: [installmentId], references: [id])
+  installment       ApplicationInstallment? @relation("PaymentSameApplication", fields: [installmentId, applicationId], references: [id, applicationId], map: "fk_payment_installment_same_application")
   reverses          CandidatePayment?       @relation("PaymentReversal", fields: [reversesPaymentId], references: [id])
   reversal          CandidatePayment?       @relation("PaymentReversal")
 
@@ -650,6 +652,7 @@ model ExpenseAllocation {
   note            String?
   expense         CompanyExpense @relation(fields: [expenseId], references: [id])
   application     Application    @relation(fields: [applicationId], references: [id])
+  settlementLines SettlementLine[] @relation("LineExpenseSameApplication")
 
   @@id([expenseId, applicationId])
   @@index([applicationId])
@@ -667,11 +670,12 @@ model PartnerCommission {
   approvedById   String?                   @map("approved_by_id") @db.Uuid
   approvedAt     DateTime?                 @map("approved_at") @db.Timestamptz(3)
   createdAt      DateTime                  @default(now()) @map("created_at") @db.Timestamptz(3)
-  application    Application               @relation(fields: [applicationId], references: [id])
+  application    Application               @relation("CommissionSamePartner", fields: [applicationId, partnerId], references: [id, referralPartnerId], map: "fk_commission_same_partner")
   partner        ReferralPartner           @relation(fields: [partnerId], references: [id])
   amountHistory  CommissionAmountHistory[]
   payments       CommissionPayment[]
 
+  @@unique([applicationId, partnerId])
   @@map("partner_commission")
 }
 
@@ -744,6 +748,7 @@ model SettlementLine {
   approvalStatus ApprovalStatus      @default(DRAFT) @map("approval_status")
   approvedById   String?             @map("approved_by_id") @db.Uuid
   settlement     CandidateSettlement @relation(fields: [settlementId, applicationId], references: [id, applicationId])
+  expenseAllocation ExpenseAllocation? @relation("LineExpenseSameApplication", fields: [expenseId, applicationId], references: [expenseId, applicationId], map: "fk_line_expense_same_application")
 
   @@index([settlementId])
   @@map("settlement_line")

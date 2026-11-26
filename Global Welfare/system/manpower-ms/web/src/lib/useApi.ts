@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { api, ApiError } from './api';
 
 export type ResourceResponse<T> = { data: T[]; total: number; page: number; pageSize: number };
@@ -12,13 +12,17 @@ export function useResource<T = any>(
   params?: Record<string, string | number | boolean | undefined | null>,
   page?: number,
   pageSize?: number,
+  refreshKey?: number,
 ) {
   const [data, setData] = useState<T[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [tick, setTick] = useState(0);
+  const loadedFor = useRef('');
   const reload = useCallback(() => setTick((t) => t + 1), []);
+  const mutate = useCallback((id: string, patch: Partial<T>) => setData((rows) => rows.map((row: any) => row.id === id ? { ...row, ...patch } : row)), []);
   const paramsKey = JSON.stringify(params ?? null);
 
   useEffect(() => {
@@ -26,7 +30,9 @@ export function useResource<T = any>(
       setData([]);
       setTotal(0);
       setLoading(false);
+      setRefreshing(false);
       setError(null);
+      loadedFor.current = '';
       return;
     }
     const query = new URLSearchParams();
@@ -36,29 +42,31 @@ export function useResource<T = any>(
       if (value !== undefined && value !== null) query.set(key, String(value));
     }
     let ignore = false;
-    setLoading(true);
+    const hadData = loadedFor.current === resource;
+    if (hadData) setRefreshing(true);
+    else { setData([]); setTotal(0); setLoading(true); }
     setError(null);
     api<ResourceResponse<T>>('/resource/' + encodeURIComponent(resource) + '?' + query.toString())
       .then((res) => {
         if (ignore) return;
+        loadedFor.current = resource;
         setData(res.data ?? []);
         setTotal(res.total ?? 0);
       })
       .catch((err) => {
         if (ignore) return;
-        setData([]);
-        setTotal(0);
+        if (!hadData) { setData([]); setTotal(0); }
         setError(errorMessage(err));
       })
       .finally(() => {
-        if (!ignore) setLoading(false);
+        if (!ignore) { setLoading(false); setRefreshing(false); }
       });
     return () => {
       ignore = true;
     };
-  }, [resource, paramsKey, page, pageSize, tick]);
+  }, [resource, paramsKey, page, pageSize, tick, refreshKey]);
 
-  return { data, total, loading, error, reload };
+  return { data, total, loading, refreshing, error, reload, mutate, setData };
 }
 
 export function useOne<T = any>(resource: string, id?: string) {

@@ -10,6 +10,7 @@ import { CANDIDATE_PAYER } from '../lib/catalogueRules';
 import { decideApproval } from '../lib/approvals';
 import { decryptPassport } from '../lib/passport';
 import { nextDemandReference } from '../lib/demandReference';
+import { resolveJobTitle } from '../lib/jobTitles';
 
 export const catalogueRouter = Router();
 const REQUIRE_COMPLIANCE_REF = true;
@@ -27,14 +28,15 @@ const demandWizardBody = z.object({
   employerId: z.string().uuid(), destinationCountryId: z.string().uuid(), overseasAgencyId: z.string().uuid(),
   expiresOn: z.preprocess(blankToNull, z.string().refine(isRealDate, 'Enter a valid date.').nullish()),
   positions: z.array(z.object({
-    jobTitleId: z.string().uuid(),
+    jobTitleId: z.string().uuid().optional(),
+    newJobTitle: z.string().trim().min(2).max(100).optional(),
     vacancies: z.coerce.number().int().min(1).max(100000),
     salaryAmount: z.preprocess(blankToNull, z.coerce.number().nonnegative().nullish()),
     salaryCurrency: z.string().trim().length(3).transform((v) => v.toUpperCase()),
     terms: z.preprocess(blankToNull, z.string().trim().max(2000).nullish()),
     priceAmount: z.coerce.number().min(0).max(10_000_000_000),
     priceCurrency: z.string().trim().length(3).transform((v) => v.toUpperCase()),
-  })).min(1).max(50),
+  }).refine((position) => Boolean(position.jobTitleId) !== Boolean(position.newJobTitle), { message: 'Choose an existing title or enter a new title.', path: ['jobTitleId'] })).min(1).max(50),
 });
 
 catalogueRouter.post('/demands/with-positions', requirePermission('catalogue.manage'), h(async (req, res) => {
@@ -49,24 +51,24 @@ catalogueRouter.post('/demands/with-positions', requirePermission('catalogue.man
   if (!agency?.active) throw new HttpError(400, 'Choose an active overseas agency.', { overseasAgencyId: 'Agency is unavailable.' });
   const associatedEmployerIds = agency.employers.map((link) => link.employerId);
   const associatedAgencyIds = employer.overseasAgencies.map((link) => link.overseasAgencyId);
-  if ((associatedEmployerIds.length || associatedAgencyIds.length) && !associatedEmployerIds.includes(employer.id) && !associatedAgencyIds.includes(agency.id))
+  if (!associatedEmployerIds.includes(employer.id) || !associatedAgencyIds.includes(agency.id))
     throw new HttpError(400, 'Choose a company associated with this overseas agency.', { employerId: 'Company is not linked to this agency.' });
   if (employer.destinationCountries.length && !employer.destinationCountries.some((link) => link.countryId === country.id))
     throw new HttpError(400, 'Choose a destination configured for this company.', { destinationCountryId: 'Company is not linked to this destination.' });
-  const titles = await prisma.jobTitle.findMany({ where: { id: { in: b.positions.map((p) => p.jobTitleId) }, active: true } });
-  if (titles.length !== new Set(b.positions.map((p) => p.jobTitleId)).size)
-    throw new HttpError(400, 'Choose active job titles for every position.', { positions: 'A job title is unavailable.' });
-  if (employer.jobTitles.length && b.positions.some((position) => !employer.jobTitles.some((link) => link.jobTitleId === position.jobTitleId)))
-    throw new HttpError(400, 'Choose job titles linked to this company.', { positions: 'A title is not linked to the selected company.' });
   const demand = await prisma.$transaction(async (tx) => {
+    const resolved = [];
+    for (const item of b.positions) resolved.push(await resolveJobTitle(tx, item));
+    const titleIds = resolved.map((title) => title.id);
+    if (new Set(titleIds).size !== titleIds.length) throw new HttpError(400, 'The same job title is listed twice. Combine worker quantities into one position.', { positions: 'Duplicate job title.' });
+    await tx.employerJobTitle.createMany({ data: titleIds.map((jobTitleId) => ({ employerId: employer.id, jobTitleId })), skipDuplicates: true });
     const created = await tx.jobDemand.create({ data: {
       employerId: employer.id, destinationCountryId: country.id, overseasAgencyId: agency.id, reference: await nextDemandReference(tx),
       expiresOn: b.expiresOn ? toDateOnly(b.expiresOn) : null,
       approvalStatus: 'APPROVED',
     } });
-    for (const item of b.positions) {
+    for (const [index, item] of b.positions.entries()) {
       const position = await tx.jobPosition.create({ data: {
-        demandId: created.id, destinationCountryId: country.id, cityId: null, jobTitleId: item.jobTitleId,
+        demandId: created.id, destinationCountryId: country.id, cityId: null, jobTitleId: titleIds[index],
         vacancies: item.vacancies, salaryAmount: item.salaryAmount ?? null,
         salaryCurrency: item.salaryAmount == null ? null : item.salaryCurrency, terms: item.terms ?? null,
       } });
@@ -183,7 +185,7 @@ const priceEntry = priceFields.extend({
   positionId: uuid,
   changeReason: z.string().trim().max(500).optional(),
 }).superRefine(datesOk);
-const priceEdit = priceFields.superRefine(datesOk);
+const priceEdit = priceFields.extend({ changeReason: z.string().trim().max(500).optional() }).superRefine(datesOk);
 
 catalogueRouter.post('/price-versions', requirePermission('catalogue.manage'), h(async (req, res) => {
   const b = parse(priceEntry, req.body);
@@ -214,15 +216,36 @@ catalogueRouter.put('/price-versions/:id', requirePermission('catalogue.manage')
     if (!pv) throw new HttpError(404, 'Price version not found.');
     if (pv.approvalStatus !== 'DRAFT' && pv.approvalStatus !== 'REJECTED')
       throw new HttpError(409, 'Only a draft or rejected price version can be edited. Create a new version instead.');
+    const established = await tx.jobPriceVersion.findFirst({ where: { positionId: pv.positionId, approvalStatus: 'APPROVED' }, select: { id: true } });
+    if (established && (!b.changeReason || b.changeReason.length < 3)) throw new HttpError(400, 'Give a reason for changing an established price.', { changeReason: 'A reason of at least 3 characters is required.' });
+    if (established && REQUIRE_COMPLIANCE_REF && !b.complianceReference) throw new HttpError(400, 'Compliance reference is required for a price change.', { complianceReference: 'Required for an established price change.' });
     await tx.jobPriceVersion.update({ where: { id: pv.id }, data: {
       currency: b.currency, effectiveFrom: toDateOnly(b.effectiveFrom),
       effectiveTo: b.effectiveTo ? toDateOnly(b.effectiveTo) : null,
-      changeReason: b.changeReason, complianceReference: b.complianceReference ?? null, approvalStatus: 'DRAFT',
+      changeReason: b.changeReason || (established ? null : 'Initial price'), complianceReference: b.complianceReference ?? null, approvalStatus: 'DRAFT',
     } });
     await tx.priceComponent.deleteMany({ where: { priceVersionId: pv.id } });
     await tx.priceComponent.createMany({ data: b.components.map((c) => ({ priceVersionId: pv.id, componentType: c.componentType, payer: c.payer as any, amount: c.amount })) });
   });
   await A(req, 'PRICE_VERSION_EDITED', 'job_price_version', req.params.id, {});
+  res.json({ data: { ok: true } });
+}));
+
+catalogueRouter.post('/price-versions/:id/activate-initial', requirePermission('catalogue.manage'), h(async (req, res) => {
+  const today = new Date(new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kathmandu' }).format(new Date()));
+  await prisma.$transaction(async (tx) => {
+    const price = await tx.jobPriceVersion.findUnique({ where: { id: req.params.id }, include: { components: true, position: { include: { demand: true } } } });
+    if (!price) throw new HttpError(404, 'Price version not found.');
+    if (price.approvalStatus !== 'DRAFT' || !price.position.active || !price.position.demand.active || !price.components.length)
+      throw new HttpError(409, 'This initial price is not ready to activate. Review its draft, demand, and position.');
+    if (price.effectiveFrom > today || (price.effectiveTo && price.effectiveTo < today))
+      throw new HttpError(409, 'This price is not effective today. Edit the dates before activating it.');
+    const versions = await tx.jobPriceVersion.count({ where: { positionId: price.positionId } });
+    const pending = await tx.approvalAction.findFirst({ where: { entityType: 'JOB_PRICE_VERSION', entityId: price.id, decision: 'PENDING' } });
+    if (versions !== 1 || pending) throw new HttpError(409, 'Price history needs review before this initial price can be activated.');
+    await tx.jobPriceVersion.update({ where: { id: price.id }, data: { approvalStatus: 'APPROVED', approvedById: actorId(req), changeReason: price.changeReason || 'Initial price' } });
+  });
+  await A(req, 'INITIAL_PRICE_ACTIVATED', 'job_price_version', req.params.id, {});
   res.json({ data: { ok: true } });
 }));
 

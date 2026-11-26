@@ -14,6 +14,7 @@ export function availablePositionWhere(): Prisma.JobPositionWhereInput {
       active: true,
       OR: [{ expiresOn: null }, { expiresOn: { gte: today } }],
       employer: { active: true },
+      overseasAgency: { active: true },
       destinationCountry: { active: true },
     },
   };
@@ -36,6 +37,8 @@ export function priceFrom(components: { payer: PayerType; amount: Prisma.Decimal
 export async function resolvePositionPrice(tx: Prisma.TransactionClient, positionId: string) {
   const pos = await tx.jobPosition.findFirst({ where: { id: positionId, ...availablePositionWhere() } });
   if (!pos) throw new HttpError(400, 'This position is not open for applications (inactive, expired, or no vacancies).', { positionId: 'Not available.' });
+  const selected = await tx.application.count({ where: { positionId, selectedAt: { not: null } } });
+  if (selected >= pos.vacancies) throw new HttpError(409, 'This position has no vacancies remaining.', { positionId: 'Full.' });
   const pv = await tx.jobPriceVersion.findFirst({
     where: { positionId, ...currentPriceWhere() }, orderBy: { effectiveFrom: 'desc' }, include: { components: true },
   });
@@ -58,6 +61,7 @@ export function positionBlockers(p: any, hasPrice: boolean, today: Date): string
   if (d && !d.active) out.push('Demand is inactive');
   if (d?.expiresOn && d.expiresOn < today) out.push('Demand has expired');
   if (d && !d.employer?.active) out.push('Employer is inactive');
+  if (d?.overseasAgency && !d.overseasAgency.active) out.push('Overseas agency is inactive');
   if (c && !c.active) out.push('Country is inactive');
   if (!hasPrice) out.push('Price not entered or no approved price change is currently effective');
   return out;

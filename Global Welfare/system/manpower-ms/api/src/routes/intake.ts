@@ -109,7 +109,7 @@ async function createApplication(
   checkSource(a);
   if (a.positionId) {
     await tx.$queryRaw`SELECT id FROM candidate WHERE id = ${a.candidateId}::uuid FOR UPDATE`;
-    if (await tx.application.findFirst({ where: { candidateId: a.candidateId, positionId: a.positionId }, select: { id: true } }))
+    if (await tx.application.findFirst({ where: { candidateId: a.candidateId, positionId: a.positionId, lifecycleStatus: { not: 'CLOSED_UNSUCCESSFULLY' } }, select: { id: true } }))
       throw new HttpError(409, 'This applicant already has an application for this position.');
   }
   if (a.referralPartnerId) {
@@ -117,9 +117,6 @@ async function createApplication(
     if (!p || p.active === false) throw new HttpError(400, 'Referral partner not found or inactive', { referralPartnerId: 'Not available.' });
   }
   const price = a.positionId ? await resolvePositionPrice(tx, a.positionId) : null;
-  if (price && await tx.application.count({ where: { positionId: price.pos.id, selectedAt: { not: null } } }) >= price.pos.vacancies)
-    throw new HttpError(409, 'This position has no vacancies remaining.');
-
   const status = holdReason ? 'ON_HOLD' : 'ACTIVE';
   const code = await nextCode(tx, 'application_code_seq', 'APP');
   try {
@@ -355,6 +352,10 @@ intakeRouter.patch('/applications/:id/selection', requirePermission('selection.m
   const row = await prisma.$transaction(async (tx) => {
     await tx.$queryRaw`SELECT id FROM job_position WHERE id = ${application.positionId}::uuid FOR UPDATE`;
     if (selectedAt && !application.selectedAt) {
+      if (['CLOSED_SUCCESSFULLY', 'CLOSED_UNSUCCESSFULLY', 'STOPPED_PENDING_SETTLEMENT'].includes(application.lifecycleStatus))
+        throw new HttpError(409, 'This application is closed or stopped and cannot be selected.');
+      const openPosition = await tx.jobPosition.findFirst({ where: { id: application.positionId!, ...availablePositionWhere() }, select: { id: true } });
+      if (!openPosition) throw new HttpError(409, 'This position is no longer open because its demand, company, country, title or agency is unavailable.');
       const current = await tx.application.count({ where: { positionId: application.positionId, selectedAt: { not: null } } });
       if (current >= application.position!.vacancies) throw new HttpError(409, 'All vacancies for this position are filled.');
     }
@@ -378,7 +379,7 @@ intakeRouter.post('/applications/:id/assign-position', requirePermission('applic
     if (CLOSED.includes(app.lifecycleStatus)) throw new HttpError(409, 'Closed applications cannot change.');
     if (app.positionId) throw new HttpError(409, 'This application already has a position. The price snapshot cannot be changed.');
     await tx.$queryRaw`SELECT id FROM candidate WHERE id = ${app.candidateId}::uuid FOR UPDATE`;
-    if (await tx.application.findFirst({ where: { candidateId: app.candidateId, positionId }, select: { id: true } }))
+    if (await tx.application.findFirst({ where: { candidateId: app.candidateId, positionId, lifecycleStatus: { not: 'CLOSED_UNSUCCESSFULLY' } }, select: { id: true } }))
       throw new HttpError(409, 'This applicant already has an application for this position.');
     const price = await resolvePositionPrice(tx, positionId);
     try {

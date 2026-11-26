@@ -5,7 +5,7 @@ import { prisma } from '../db';
 import { audit } from '../lib/audit';
 import { HttpError } from '../lib/http';
 import { candidateSearchWhere } from '../lib/candidateSearch';
-import { alpha3ToAlpha2, alpha2ToAlpha3 } from '../lib/countryCodes';
+import { alpha2ToAlpha3, resolveCountryName } from '../lib/countryCodes';
 import { dateKey, isRealDate, toDateOnly, todayKathmandu } from '../lib/dates';
 import { currentPriceWhere, positionBlockers } from '../lib/catalogueRules';
 import { decideApproval } from '../lib/approvals';
@@ -110,24 +110,27 @@ const resources: Record<string, Resource> = {
   },
   countries: {
     delegate: 'country', read: ['catalogue.read'], write: 'catalogue.manage',
-    createFields: ['iso3Code', 'name', 'region'],
+    createFields: ['name', 'region'],
     updateFields: ['name', 'region', 'displayOrder', 'active'],
     fields: ['iso2Code', 'iso3Code', 'name', 'region', 'displayOrder', 'active'],
     search: ['iso2Code', 'iso3Code', 'name'], filters: ['active', 'region'], orderBy: [{ region: 'asc' }, { displayOrder: 'asc' }, { name: 'asc' }],
     decorate: async (rows) => rows.map((row) => ({ ...row, iso3Code: row.iso3Code ?? alpha2ToAlpha3.get(row.iso2Code) ?? null })),
     prepare: async (op, data, existing, db) => {
+      if ('region' in data && data.region === '') data.region = null;
       if ('region' in data && data.region !== null && !['EUROPE', 'GULF'].includes(data.region)) throw new HttpError(400, 'Choose Europe or Gulf.', { region: 'Choose a valid region.' });
       if ('displayOrder' in data && (!Number.isInteger(data.displayOrder) || data.displayOrder < 0 || data.displayOrder > 100000)) throw new HttpError(400, 'Invalid country order.', { displayOrder: 'Use a whole number from 0 to 100000.' });
       if (op === 'create') {
-        data.iso3Code = text(data.iso3Code, 'Country code', 3, 3).toUpperCase();
-        const alpha2 = alpha3ToAlpha2.get(data.iso3Code);
-        if (!alpha2) throw new HttpError(400, 'Enter a valid 3-letter country code.', { iso3Code: 'Use a valid country code, such as NPL.' });
-        data.iso2Code = alpha2;
+        const country = resolveCountryName(text(data.name, 'Country name'));
+        if (!country) throw new HttpError(400, 'Enter a recognized, unambiguous country name.', { name: 'Use the full country name; Congo and Korea need a more specific name.' });
+        if (await db.country.findUnique({ where: { iso2Code: country.iso2 } })) throw new HttpError(409, 'This country is already in the catalogue.', { name: 'Already exists.' });
+        data.name = country.name; data.iso2Code = country.iso2; data.iso3Code = country.iso3;
       }
-      if ('name' in data) data.name = text(data.name, 'Name');
+      if ('name' in data && op !== 'create') data.name = text(data.name, 'Name');
       if (op === 'update' && data.active === false && existing.active) {
         const n = await db.jobDemand.count({ where: { destinationCountryId: existing.id, active: true } });
         if (n) throw new HttpError(409, 'This country has active demands. Deactivate them first.');
+        const passports = await db.candidatePassport.count({ where: { issuingCountryId: existing.id } });
+        if (passports) throw new HttpError(409, 'This country is used as a passport issuing country and cannot be deactivated.');
       }
     },
   },
@@ -159,11 +162,16 @@ const resources: Record<string, Resource> = {
     fields: ['countryId', 'name', 'contactName', 'phone', 'email', 'notes', 'active'],
     search: ['name', 'contactName', 'phone', 'email'], filters: ['countryId', 'active'], orderBy: [{ name: 'asc' }],
     include: { country: { select: { id: true, name: true } }, employers: { include: { employer: { select: { id: true, legalName: true } } } }, demands: { select: { id: true, reference: true, active: true, positions: { select: { id: true, vacancies: true, jobTitle: { select: { title: true } } } } } } },
-    prepare: async (_op, data) => { if ('name' in data) data.name = text(data.name, 'Agency name'); },
+    prepare: async (op, data, existing, db) => {
+      if ('name' in data) data.name = text(data.name, 'Agency name');
+      if (op === 'update' && data.active === false && existing.active) {
+        const n = await db.jobDemand.count({ where: { overseasAgencyId: existing.id, active: true } });
+        if (n) throw new HttpError(409, 'This agency has active demands. Deactivate them first.');
+      }
+    },
   },
   demands: {
-    delegate: 'jobDemand', read: ['catalogue.read'], write: 'catalogue.manage',
-    createFields: ['employerId', 'destinationCountryId', 'overseasAgencyId', 'feimsReference', 'expiresOn'],
+    delegate: 'jobDemand', read: ['catalogue.read'], write: { update: 'catalogue.manage' },
     updateFields: ['overseasAgencyId', 'expiresOn', 'active'],
     fields: ['employerId', 'destinationCountryId', 'overseasAgencyId', 'reference', 'feimsReference', 'expiresOn', 'active'],
     search: ['reference', 'feimsReference'], filters: ['employerId', 'destinationCountryId', 'overseasAgencyId', 'active'],
@@ -175,7 +183,14 @@ const resources: Record<string, Resource> = {
       { overseasAgency: { name: { contains: q, mode: 'insensitive' } } },
       { positions: { some: { jobTitle: { title: { contains: q, mode: 'insensitive' } } } } },
     ] }),
-    prepare: async (op, data, existing) => {
+    prepare: async (op, data, existing, db) => {
+      if (op === 'update' && 'overseasAgencyId' in data && data.overseasAgencyId) {
+        const link = await db.employerOverseasAgency.findUnique({
+          where: { employerId_overseasAgencyId: { employerId: existing.employerId, overseasAgencyId: data.overseasAgencyId } },
+          include: { overseasAgency: { select: { active: true } } },
+        });
+        if (!link?.overseasAgency.active) throw new HttpError(400, 'Choose an active agency linked to this company.', { overseasAgencyId: 'Not linked.' });
+      }
       if ('reference' in data) data.reference = text(data.reference, 'Reference', 2, 100);
       if ('feimsReference' in data) {
         data.feimsReference = data.feimsReference ? text(data.feimsReference, 'FEIMS reference', 2, 100) : null;
@@ -206,9 +221,13 @@ const resources: Record<string, Resource> = {
       })).map((p: any) => p.positionId));
       return rows.map((r) => ({ ...r, blockers: positionBlockers(r, priced.has(r.id), today) }));
     },
-    prepare: async (_op, data) => {
-      if ('vacancies' in data && (!Number.isInteger(data.vacancies) || data.vacancies < 0 || data.vacancies > 100000))
-        throw new HttpError(400, 'Vacancies must be a whole number from 0 to 100000.', { vacancies: 'Invalid.' });
+    prepare: async (_op, data, existing, db) => {
+      if ('vacancies' in data) {
+        if (!Number.isInteger(data.vacancies) || data.vacancies < 1 || data.vacancies > 100000)
+          throw new HttpError(400, 'Workers required must be 1 to 100000. To close a position, deactivate it.', { vacancies: 'Invalid.' });
+        const filled = await db.application.count({ where: { positionId: existing.id, selectedAt: { not: null } } });
+        if (data.vacancies < filled) throw new HttpError(409, `${filled} workers are already selected. Vacancies cannot go below that.`, { vacancies: 'Below selected workers.' });
+      }
       if ('salaryAmount' in data || 'salaryCurrency' in data) {
         const a = data.salaryAmount ?? null, c = data.salaryCurrency ? String(data.salaryCurrency).toUpperCase() : null;
         if ((a === null) !== (c === null)) throw new HttpError(400, 'Salary amount and currency must be given together.', { salaryCurrency: 'Required with amount.' });
@@ -634,6 +653,16 @@ resourcesRouter.patch('/:name/:id', requireAuth, guard('update'), wrap(async (re
   res.json({ data: serialize(row) });
 }));
 
+resourcesRouter.post('/countries/reorder', requireAuth, requirePermission('catalogue.manage'), wrap(async (req, res) => {
+  const { region, orderedIds } = req.body ?? {};
+  if (!(region === null || region === 'EUROPE' || region === 'GULF') || !Array.isArray(orderedIds) || orderedIds.length > 300 || orderedIds.some((id: unknown) => typeof id !== 'string' || !/^[0-9a-f-]{36}$/i.test(id)) || new Set(orderedIds).size !== orderedIds.length)
+    throw new HttpError(400, 'Choose a valid region and country order.');
+  const existing = await prisma.country.findMany({ where: { id: { in: orderedIds } }, select: { id: true, region: true } });
+  if (existing.length !== orderedIds.length || existing.filter((row) => row.region !== region).length > 1) throw new HttpError(400, 'The country order contains an unknown country or invalid region change.');
+  await prisma.$transaction(orderedIds.map((id: string, index: number) => prisma.country.update({ where: { id }, data: { region, displayOrder: (index + 1) * 10 } })));
+  res.json({ data: { ok: true } });
+}));
+
 resourcesRouter.put('/employers/:id/overseas-agencies', requireAuth, requirePermission('catalogue.manage'), wrap(async (req, res) => {
   const ids = req.body?.overseasAgencyIds;
   if (!Array.isArray(ids) || ids.length > 100 || ids.some((id: unknown) => typeof id !== 'string' || !/^[0-9a-f-]{36}$/i.test(id)))
@@ -684,6 +713,12 @@ resourcesRouter.put('/employers/:id/relationships', requireAuth, requirePermissi
   ]);
   if (!employer) throw new HttpError(404, 'Company not found.');
   if (countries.length !== countriesToLink.length || agencies.length !== agenciesToLink.length) throw new HttpError(400, 'One or more relationship records are unavailable.');
+  const orphaned = await prisma.jobDemand.findMany({ where: { employerId: employer.id, active: true, overseasAgencyId: { not: null, notIn: agenciesToLink } }, select: { reference: true }, take: 5 });
+  if (orphaned.length) throw new HttpError(409, `Active demands (${orphaned.map((d) => d.reference).join(', ')}) use an agency you are removing.`);
+  if (countriesToLink.length) {
+    const outside = await prisma.jobDemand.findMany({ where: { employerId: employer.id, active: true, destinationCountryId: { notIn: countriesToLink } }, select: { reference: true }, take: 5 });
+    if (outside.length) throw new HttpError(409, `Active demands (${outside.map((d) => d.reference).join(', ')}) use a destination you are removing.`);
+  }
   await prisma.$transaction(async (tx) => {
     await tx.employerDestinationCountry.deleteMany({ where: { employerId: employer.id } });
     await tx.employerOverseasAgency.deleteMany({ where: { employerId: employer.id } });
@@ -694,18 +729,49 @@ resourcesRouter.put('/employers/:id/relationships', requireAuth, requirePermissi
   res.json({ data: { ok: true } });
 }));
 
+resourcesRouter.post('/overseas-agencies/:id/companies/link', requireAuth, requirePermission('catalogue.manage'), wrap(async (req, res) => {
+  const employerId = req.body?.employerId;
+  if (typeof employerId !== 'string' || !/^[0-9a-f-]{36}$/i.test(employerId)) throw new HttpError(400, 'Choose a valid company.');
+  const [agency, employer] = await Promise.all([
+    prisma.overseasAgency.findUnique({ where: { id: req.params.id }, select: { id: true, active: true } }),
+    prisma.employer.findUnique({ where: { id: employerId }, select: { id: true, active: true } }),
+  ]);
+  if (!agency?.active) throw new HttpError(404, 'Active overseas agency not found.');
+  if (!employer?.active) throw new HttpError(404, 'Active company not found.');
+  const link = await prisma.$transaction(async (tx) => {
+    const existing = await tx.employerOverseasAgency.findUnique({ where: { employerId_overseasAgencyId: { employerId, overseasAgencyId: agency.id } } });
+    await tx.employerOverseasAgency.upsert({
+      where: { employerId_overseasAgencyId: { employerId, overseasAgencyId: agency.id } },
+      create: { employerId, overseasAgencyId: agency.id }, update: {},
+    });
+    const company = await tx.employer.findUnique({ where: { id: employerId }, include: {
+      registeredCountry: true, overseasAgencies: { include: { overseasAgency: true } },
+      destinationCountries: { include: { country: true } }, jobTitles: { include: { jobTitle: true } },
+    } });
+    return { company, created: !existing };
+  });
+  if (link.created) await audit(req, 'COMPANY_LINKED_TO_OVERSEAS_AGENCY', { entityType: 'employer', entityId: employerId, detail: { overseasAgencyId: agency.id } });
+  res.status(link.created ? 201 : 200).json({ data: serialize(link.company) });
+}));
+
 resourcesRouter.post('/overseas-agencies/:id/companies', requireAuth, requirePermission('catalogue.manage'), wrap(async (req, res) => {
   const body = req.body ?? {};
   const legalName = text(body.legalName, 'Company name');
   const rawCountryIds = Array.isArray(body.countryIds) ? body.countryIds : body.destinationCountryId ? [body.destinationCountryId] : [];
   if (rawCountryIds.length > 100 || rawCountryIds.some((id: unknown) => typeof id !== 'string' || !/^[0-9a-f-]{36}$/i.test(id))) throw new HttpError(400, 'Choose valid destination countries.');
   const countryIds = [...new Set(rawCountryIds as string[])];
+  if (!countryIds.length) throw new HttpError(400, 'Choose a destination country.', { destinationCountryId: 'A destination country is required.' });
   const [agency, countries] = await Promise.all([
     prisma.overseasAgency.findUnique({ where: { id: req.params.id }, select: { id: true, countryId: true, active: true } }),
     prisma.country.findMany({ where: { id: { in: countryIds }, active: true }, select: { id: true } }),
   ]);
   if (!agency?.active) throw new HttpError(404, 'Active overseas agency not found.');
   if (countries.length !== countryIds.length) throw new HttpError(400, 'One or more destination countries are unavailable.');
+  const duplicate = await prisma.employer.findFirst({ where: {
+    legalName: { equals: legalName, mode: 'insensitive' },
+    overseasAgencies: { some: { overseasAgencyId: agency.id } },
+  }, select: { id: true } });
+  if (duplicate) throw new HttpError(409, 'A company with this name is already linked to this agency.');
   const company = await prisma.$transaction(async (tx) => tx.employer.create({ data: {
     registeredCountryId: agency.countryId, legalName, contactName: typeof body.contactName === 'string' ? body.contactName.trim() || null : null,
     phone: typeof body.phone === 'string' ? body.phone.trim() || null : null, email: typeof body.email === 'string' ? body.email.trim() || null : null,

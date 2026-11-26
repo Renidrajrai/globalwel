@@ -1,7 +1,9 @@
 import express, { type NextFunction, type Request, type Response } from 'express';
+import { randomUUID } from 'node:crypto';
 import cookieParser from 'cookie-parser';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
+import { Prisma } from '@prisma/client';
 import { env } from './config/env';
 import { checkOrigin, loadSession, requireCsrf, requireAuth } from './auth/middleware';
 import { authRouter } from './routes/auth';
@@ -13,6 +15,11 @@ import { catalogueRouter } from './routes/catalogue';
 export const app = express();
 
 app.set('trust proxy', env.NODE_ENV === 'production' ? 1 : false);
+app.use((_req, res, next) => {
+  res.locals.requestId = randomUUID();
+  res.setHeader('X-Request-Id', res.locals.requestId);
+  next();
+});
 app.use(helmet());
 app.use(express.json({ limit: '100kb' }));
 app.use(cookieParser());
@@ -35,7 +42,18 @@ app.use('/api/analytics', analyticsRouter);
 
 app.use((_req, res) => res.status(404).json({ error: 'Not found.' }));
 
-app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
-  console.error(err);
-  res.status(500).json({ error: 'Something went wrong on the server. Try again.' });
+app.use((err: unknown, req: Request, res: Response, _next: NextFunction) => {
+  const error = err instanceof Error ? err : new Error(String(err));
+  const safe = (value: string) => value
+    .replace(/postgres(?:ql)?:\/\/[^\s]+/gi, '[database URL redacted]')
+    .replace(/(password|passport|token|secret|key)\s*[:=]\s*[^\s,;]+/gi, '$1=[redacted]');
+  const requestId = res.locals.requestId as string;
+  const details = err instanceof Prisma.PrismaClientKnownRequestError && ['P2021', 'P2022'].includes(err.code)
+    ? { status: 500, error: 'The database structure is out of date. An administrator needs to check the database migrations.' }
+    : { status: 500, error: 'Something went wrong on the server. Try again.' };
+  console.error(JSON.stringify({
+    requestId, method: req.method, path: req.path, name: error.name,
+    message: safe(error.message), ...(env.NODE_ENV === 'development' && error.stack ? { stack: safe(error.stack) } : {}),
+  }));
+  res.status(details.status).json({ error: details.error, requestId });
 });
