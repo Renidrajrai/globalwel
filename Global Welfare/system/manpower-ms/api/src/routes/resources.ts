@@ -92,10 +92,11 @@ const resources: Record<string, Resource> = {
         include: {
           jobTitle: true,
           city: { include: { country: true } },
-          demand: { include: { employer: true, destinationCountry: true } },
+          demand: { include: { employer: true, destinationCountry: true, overseasAgency: true } },
         },
       },
       referralPartner: true,
+      positionPreferences: { include: { position: { include: { jobTitle: true, demand: { include: { employer: true, destinationCountry: true, overseasAgency: true } } } } } },
     },
     filters: ['candidateId', 'positionId', 'lifecycleStatus', 'sourceType', 'referralPartnerId', 'assignedToId', 'selected'],
   },
@@ -936,11 +937,12 @@ analyticsRouter.get('/summary', requireAuth, wrap(async (req, res) => {
   monthStart.setUTCDate(1);
   monthStart.setUTCHours(0, 0, 0, 0);
   const canReadApplications = req.auth!.permissions.has('application.read');
+  const canReadCandidates = req.auth!.permissions.has('candidate.read');
   const canReadApprovals = req.auth!.permissions.has('catalogue.approve') || req.auth!.permissions.has('finance.settlement.approve') || req.auth!.permissions.has('finance.commission.approve');
   const canReadFinance = req.auth!.permissions.has('report.finance') || req.auth!.permissions.has('finance.receipt.read');
   const canReadCatalogue = req.auth!.permissions.has('catalogue.read');
   const canReadSelection = req.auth!.permissions.has('application.read') && req.auth!.permissions.has('candidate.read');
-  const [activeApplications, pendingApprovals, pendingRefunds, collected, activeAgencies, activeRefers, activeCompanies, activeDemands, countryRegions, requestedVacancies, selectedWorkers, pendingPhoto, pendingPcc, pendingMedical] = await Promise.all([
+  const [activeApplications, pendingApprovals, pendingRefunds, collected, activeAgencies, activeRefers, activeCompanies, activeDemands, countryRegions, requestedVacancies, selectedWorkers, pendingPhoto, pendingPcc, pendingMedical, totalApplicants, onHoldApplications, completedApplications] = await Promise.all([
     canReadApplications ? prisma.application.count({ where: { lifecycleStatus: 'ACTIVE' } }) : Promise.resolve(null),
     canReadApprovals ? prisma.approvalAction.count({ where: { decision: 'PENDING', entityType: { in: ['JOB_PRICE_VERSION', 'PARTNER_COMMISSION', 'CANDIDATE_SETTLEMENT'] } } }) : Promise.resolve(null),
     canReadFinance ? prisma.candidateRefund.count({ where: { amount: { gt: 0 } } }) : Promise.resolve(null),
@@ -959,11 +961,17 @@ analyticsRouter.get('/summary', requireAuth, wrap(async (req, res) => {
     canReadSelection ? prisma.application.count({ where: { selectedAt: { not: null }, photoStatus: 'PENDING', position: { active: true, demand: { active: true } } } }) : Promise.resolve(null),
     canReadSelection ? prisma.application.count({ where: { selectedAt: { not: null }, pccStatus: 'PENDING', position: { active: true, demand: { active: true } } } }) : Promise.resolve(null),
     canReadSelection ? prisma.application.count({ where: { selectedAt: { not: null }, medicalStatus: 'PENDING', position: { active: true, demand: { active: true } } } }) : Promise.resolve(null),
+    canReadCandidates ? prisma.candidate.count() : Promise.resolve(null),
+    canReadApplications ? prisma.application.count({ where: { lifecycleStatus: 'ON_HOLD' } }) : Promise.resolve(null),
+    canReadApplications ? prisma.application.count({ where: { lifecycleStatus: 'CLOSED_SUCCESSFULLY' } }) : Promise.resolve(null),
   ]);
   const vacancies = requestedVacancies?._sum.vacancies ?? null;
   res.json({
     data: {
       activeApplications,
+      totalApplicants,
+      onHoldApplications,
+      completedApplications,
       pendingApprovals,
       pendingRefunds,
       collectedThisMonth: collected.map((row) => ({
@@ -1000,4 +1008,27 @@ analyticsRouter.get('/search', requireAuth, wrap(async (req, res) => {
     jobs.push(prisma.jobTitle.findMany({ where: { title: { contains: q, mode: 'insensitive' } }, select: { id: true, title: true }, take: 5 }).then((rows) => rows.map((row) => ({ type: 'Job title', title: row.title, description: 'Reusable title', to: '/companies' }))));
   }
   res.json({ data: (await Promise.all(jobs)).flat().slice(0, 20) });
+}));
+
+// Read-only business activity feed. Audit detail is deliberately excluded: it can
+// contain sensitive identifiers and the CEO view only needs who/what/when.
+analyticsRouter.get('/activity', requireAuth, requirePermission('audit.read'), wrap(async (_req, res) => {
+  const logs = await prisma.auditLog.findMany({
+    where: { entityType: { in: ['candidate', 'candidates', 'application', 'applications', 'job_demand', 'demands', 'overseas_agency', 'overseas-agencies', 'employer', 'employers'] } },
+    orderBy: { at: 'desc' }, take: 20,
+    select: { id: true, at: true, action: true, actorUserId: true, entityType: true, entityId: true },
+  });
+  const actorIds = [...new Set(logs.flatMap((row) => row.actorUserId ? [row.actorUserId] : []))];
+  const actors = await prisma.user.findMany({ where: { id: { in: actorIds } }, select: { id: true, fullName: true } });
+  const actorNames = new Map(actors.map((actor) => [actor.id, actor.fullName]));
+  const route = (type: string | null, id: string | null) => {
+    if (!id) return null;
+    if (type === 'candidate' || type === 'candidates') return `/candidates/${id}`;
+    if (type === 'application' || type === 'applications') return `/applications/${id}`;
+    if (type === 'job_demand' || type === 'demands') return `/demands/${id}`;
+    if (type === 'overseas_agency' || type === 'overseas-agencies') return `/agencies/${id}`;
+    if (type === 'employer' || type === 'employers') return `/companies/${id}`;
+    return null;
+  };
+  res.json({ data: logs.map((row) => ({ id: row.id, at: row.at, action: row.action.replaceAll('_', ' ').toLowerCase(), actor: row.actorUserId ? actorNames.get(row.actorUserId) ?? 'Former user' : 'System', entityType: row.entityType, to: route(row.entityType, row.entityId) })) });
 }));

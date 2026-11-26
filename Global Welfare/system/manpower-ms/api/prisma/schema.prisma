@@ -348,6 +348,7 @@ model JobPosition {
   jobTitle             JobTitle          @relation(fields: [jobTitleId], references: [id])
   priceVersions        JobPriceVersion[]
   applications         Application[]
+  preferenceLinks      ApplicationPositionPreference[]
 
   @@unique([id, destinationCountryId])
   @@index([demandId])
@@ -480,6 +481,7 @@ model Application {
   expenseAllocations   ExpenseAllocation[]
   commission           PartnerCommission?       @relation("CommissionSamePartner")
   settlements          CandidateSettlement[]
+  positionPreferences  ApplicationPositionPreference[]
 
   @@unique([id, referralPartnerId])
   @@index([candidateId])
@@ -487,6 +489,20 @@ model Application {
   @@index([selectedAt])
   @@index([lifecycleStatus])
   @@map("application")
+}
+
+/// Positions a candidate is willing to consider. The final selected position
+/// remains Application.positionId; preferences never consume vacancies.
+model ApplicationPositionPreference {
+  applicationId String      @map("application_id") @db.Uuid
+  positionId    String      @map("position_id") @db.Uuid
+  createdAt     DateTime    @default(now()) @map("created_at") @db.Timestamptz(3)
+  application   Application @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  position      JobPosition @relation(fields: [positionId], references: [id])
+
+  @@id([applicationId, positionId])
+  @@index([positionId])
+  @@map("application_position_preference")
 }
 
 model ApplicationPriceComponent {

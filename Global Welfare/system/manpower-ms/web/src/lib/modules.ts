@@ -1,5 +1,5 @@
 import {
-  FileText, GlobeHemisphereWest, ListChecks, ShieldCheck, Users, UsersThree, Wallet,
+  FileText, ListChecks, ShieldCheck, Users, UsersThree, Wallet,
 } from '@phosphor-icons/react';
 import type { Icon } from '@phosphor-icons/react';
 
@@ -26,7 +26,6 @@ export type ModuleDef = {
 };
 
 export const MODULES: ModuleDef[] = [
-  { key: 'countries', title: 'Countries', description: 'Organize destination countries by operating region.', icon: GlobeHemisphereWest, anyOf: ['catalogue.read', 'catalogue.manage'], path: '/countries' },
   { key: 'agencies', title: 'Agencies', description: 'Manage overseas agencies and Refer sources separately.', icon: UsersThree, anyOf: ['catalogue.read', 'catalogue.manage'], path: '/agencies' },
   { key: 'demands', title: 'Demands', description: 'Manage foreign recruitment demands, positions and selection progress.', icon: Wallet, anyOf: ['catalogue.read', 'catalogue.manage'], path: '/demands' },
   { key: 'candidates', title: 'Applicants', description: 'Register people and track their recruitment history.', icon: Users, anyOf: ['candidate.read', 'candidate.create'], path: '/candidates' },

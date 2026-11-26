@@ -110,7 +110,7 @@ export default function IntakePage() {
         </div>
       </>}
 
-      <p className="title-4">Applications · {selectedPositions.length} selected</p>
+      <p className="title-4">One application · {selectedPositions.length} position preferences</p>
       <Field id="position-search" label="Find an available position" type="search" placeholder="Search job, company, country or demand" value={positionQuery} onChange={(e) => setPositionQuery(e.target.value)} />
       <div className="max-h-64 space-y-2 overflow-y-auto rounded-lg border border-line p-2">
         {(positions ?? []).filter((position) => `${position.label} ${position.employer}`.toLowerCase().includes(positionQuery.trim().toLowerCase())).map((position) => <label key={position.id} className="flex cursor-pointer items-start gap-3 rounded-lg p-3 hover:bg-surface"><input type="checkbox" className="mt-1" checked={selectedPositions.includes(position.id)} onChange={(e) => setSelectedPositions((ids) => e.target.checked ? [...ids, position.id] : ids.filter((id) => id !== position.id))} /><span><span className="title-4 block">{position.label}</span><span className="caption-5 text-muted">{position.employer} · {position.vacancies} vacancies remaining · {position.currency} {position.agreedAmount}</span></span></label>)}
@@ -125,7 +125,7 @@ export default function IntakePage() {
       </div>}
       {duplicates.length > 0 && <div className="rounded-lg border border-line bg-surface p-3"><p className="title-4">Possible existing candidates</p><ul className="mt-2 list-inside list-disc body-6">{duplicates.map((candidate) => <li key={candidate.id}>{candidate.fullName} · {candidate.candidateCode}</li>)}</ul></div>}
       {err && <p role="alert" className="body-6 text-danger">{err}</p>}
-      <div><Button type="submit" disabled={busy || optionsLoading || !selectedPositions.length}>{busy ? 'Saving…' : lookup?.found ? `Create ${selectedPositions.length} application${selectedPositions.length === 1 ? '' : 's'}` : 'Create applicant & applications'}</Button></div>
+      <div><Button type="submit" disabled={busy || optionsLoading || !selectedPositions.length}>{busy ? 'Saving…' : lookup?.found ? 'Create one application' : 'Create applicant & application'}</Button></div>
     </form>}
   </div>;
 }

@@ -4,8 +4,8 @@ import { Button } from '../components/Button';
 
 const cx = {
   input: 'body-3 w-full rounded-lg border border-line bg-bg px-3 py-2 placeholder:text-muted focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-fg',
-  btn: 'button-sm inline-flex items-center justify-center rounded-lg border border-line bg-bg px-2 py-1 text-fg hover:bg-surface disabled:pointer-events-none disabled:opacity-50',
-  primary: 'button-md inline-flex items-center justify-center rounded-lg bg-primary px-3 py-2 text-on-primary hover:opacity-90 disabled:pointer-events-none disabled:opacity-50',
+  btn: 'button-sm inline-flex items-center justify-center rounded-lg border border-line bg-bg px-2 py-1 text-fg hover:border-primary hover:bg-soft-matcha disabled:pointer-events-none disabled:opacity-50',
+  primary: 'button-md inline-flex items-center justify-center rounded-lg bg-primary px-3 py-2 text-on-primary hover:bg-primary-hover disabled:pointer-events-none disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary',
 };
 const post = (path: string, body: unknown = {}) => api(path, { method: 'POST', body });
 const dateOf = (value: unknown) => (value ? String(value).slice(0, 10) : '');

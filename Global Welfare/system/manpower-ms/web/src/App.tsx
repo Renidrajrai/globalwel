@@ -13,7 +13,7 @@ import {
   FinancePage,
   UsersPage,
 } from './pages/ops';
-import { AgenciesPage, CompaniesPage, CountriesPage } from './pages/BusinessPages';
+import { AgenciesPage, CompaniesPage } from './pages/BusinessPages';
 import { DemandDetailPage, DemandsPage } from './pages/DemandPages';
 import IntakePage from './pages/IntakePage';
 
@@ -42,8 +42,8 @@ export default function App() {
           <Route path="applications" element={<ApplicationsPage />} />
           <Route path="applications/:id" element={<ApplicationDetailPage />} />
           <Route path="intake" element={<IntakePage />} />
-          <Route path="countries" element={<CountriesPage />} />
-          <Route path="countries/:id" element={<Navigate to="/countries" replace />} />
+          <Route path="countries" element={<Navigate to="/demands?manageCountries=1" replace />} />
+          <Route path="countries/:id" element={<Navigate to="/demands?manageCountries=1" replace />} />
           <Route path="agencies" element={<AgenciesPage />} />
           <Route path="agencies/:id" element={<AgenciesPage />} />
           <Route path="refers/:id" element={<AgenciesPage />} />

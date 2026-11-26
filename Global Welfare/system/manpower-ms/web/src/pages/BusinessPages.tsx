@@ -1,69 +1,70 @@
-import { useState, type JSX } from 'react';
+import { useState, type FormEvent, type JSX } from 'react';
 import { useLocation, useParams } from 'react-router-dom';
 import { useAuth } from '../auth/AuthContext';
 import { Button } from '../components/Button';
 import { DetailPage, ListPage } from '../components/engines';
-import { EmptyState, ErrorState, FormDialog, PageHeader, SkeletonRows } from '../components/ui';
+import { EmptyState, ErrorState, FormDialog, PageHeader, SkeletonRows, StatusBadge } from '../components/ui';
 import { api } from '../lib/api';
 import { useResource } from '../lib/useApi';
 
 const regionOptions = [{ value: 'EUROPE', label: 'Europe' }, { value: 'GULF', label: 'Gulf' }];
-const countryForm = {
-  title: 'Add country', path: '/resource/countries', fields: [
-    { name: 'name', label: 'Country name', required: true },
-    { name: 'region', label: 'Region (optional)', type: 'select' as const, options: regionOptions },
-  ],
-};
-const countryEditForm = {
-  title: 'Edit country', path: '', method: 'PATCH' as const, fields: [
-    { name: 'name', label: 'Country name', required: true },
-  ],
-};
-
-function CountryCard({ row, canManage, move, reload, mutate }: { row: any; canManage: boolean; move: (id: string, region: string | null, beforeId?: string) => Promise<void>; reload: () => void; mutate: (id: string, patch: any) => void }): JSX.Element {
-  const [editing, setEditing] = useState(false);
-  const [busy, setBusy] = useState(false);
-  return <article draggable={canManage} onDragStart={(e) => { e.dataTransfer.setData('text/plain', row.id); e.dataTransfer.effectAllowed = 'move'; }} onDragOver={(e) => e.preventDefault()} onDrop={(e) => { e.preventDefault(); const id = e.dataTransfer.getData('text/plain'); if (id && id !== row.id) void move(id, row.region ?? null, row.id); }} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-line bg-bg p-4">
-    <div className="min-w-0"><p className="title-3">{row.name}</p><p className="caption-5 mt-1 text-muted">{row.iso3Code ?? row.iso2Code} · {row.active ? 'Active' : 'Inactive'}</p></div>
-    <div className="flex flex-wrap items-center gap-2">
-      {canManage && <label className="caption-5 flex items-center gap-2">Move to <select aria-label={`Move ${row.name} to a region`} className="body-6 rounded-lg border border-line bg-bg px-2 py-1" value={row.region ?? ''} onChange={(e) => void move(row.id, e.target.value || null)}><option value="">Unassigned</option>{regionOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>}
-      {canManage && <><Button size="sm" variant="secondary" onClick={() => setEditing(true)}>Edit</Button><Button size="sm" variant="ghost" disabled={busy} onClick={async () => { setBusy(true); try { const result = await api<{ data: any }>(`/resource/countries/${row.id}`, { method: 'PATCH', body: { active: !row.active } }); mutate(row.id, { active: result.data.active }); } catch { reload(); } finally { setBusy(false); } }}>{row.active ? 'Deactivate' : 'Activate'}</Button></>}
-    </div>
-    {editing && <FormDialog open form={{ ...countryEditForm, path: `/resource/countries/${row.id}` }} initial={{ name: row.name }} onClose={() => setEditing(false)} onSaved={() => { setEditing(false); reload(); }} />}
-  </article>;
-}
-
-export function CountriesPage(): JSX.Element {
+const countryEditForm = { title: 'Edit country', path: '', method: 'PATCH' as const, fields: [{ name: 'name', label: 'Country name', required: true }] };
+export function CountryManagementDrawer({ onClose, onCreated }: { onClose: () => void; onCreated?: (country: any) => void }): JSX.Element {
   const { can } = useAuth();
   const canRead = can('catalogue.read', 'catalogue.manage'); const canManage = can('catalogue.manage');
-  const { data, loading, error, reload, mutate, setData } = useResource<any>('countries', {}, 1, 200);
-  const [addOpen, setAddOpen] = useState(false); const [query, setQuery] = useState(''); const [moveError, setMoveError] = useState('');
-  if (!canRead) return <EmptyState title="You do not have access to this page." hint="Ask an administrator if you need access." />;
-  const visible = data.filter((row) => !query.trim() || `${row.name} ${row.iso3Code}`.toLowerCase().includes(query.trim().toLowerCase()));
-  async function move(id: string, region: string | null, beforeId?: string) {
-    const row = data.find((item) => item.id === id); if (!row || !canManage) return;
-    const target = data.filter((item) => (item.region ?? null) === region && item.id !== id).sort((a, b) => a.displayOrder - b.displayOrder || a.name.localeCompare(b.name));
-    const at = beforeId ? target.findIndex((item) => item.id === beforeId) : -1;
-    target.splice(at < 0 ? target.length : at, 0, { ...row, region });
-    const previous = data; const orderedIds = target.map((item) => item.id); const next = data.map((item) => { const index = orderedIds.indexOf(item.id); return index < 0 ? item : { ...item, region, displayOrder: (index + 1) * 10 }; });
-    setData(next);
-    try { await api('/resource/countries/reorder', { method: 'POST', body: { region, orderedIds } }); setMoveError(''); }
-    catch (e) { setData(previous); setMoveError(e instanceof Error ? e.message : 'Could not save the country order.'); }
+  const { data, loading, error, reload, mutate, setData } = useResource<any>('countries', {}, 1, 300);
+  const [addOpen, setAddOpen] = useState(false); const [query, setQuery] = useState(''); const [status, setStatus] = useState(''); const [notice, setNotice] = useState(''); const [moveError, setMoveError] = useState('');
+  const [editingCountry, setEditingCountry] = useState<any>(null);
+  const [saving, setSaving] = useState(false); const [formError, setFormError] = useState(''); const [name, setName] = useState(''); const [region, setRegion] = useState('');
+  if (!canRead) return <div className="fixed inset-0 z-50 grid place-items-center bg-black/40 p-4"><section role="dialog" aria-modal="true" className="rounded-xl border border-line bg-bg p-6"><EmptyState title="You do not have access to country management." /><Button onClick={onClose}>Close</Button></section></div>;
+  const visible = data.filter((row) => (!query.trim() || `${row.name} ${row.iso3Code} ${row.iso2Code}`.toLowerCase().includes(query.trim().toLowerCase())) && (!status || String(row.active) === status));
+  async function addCountry(e: FormEvent) {
+    e.preventDefault(); setSaving(true); setFormError('');
+    try {
+      const result = await api<{ data: any }>('/resource/countries', { method: 'POST', body: { name, region: region || null } });
+      setData((rows) => [...rows, result.data]); setName(''); setRegion(''); setAddOpen(false); setNotice(`${result.data.name} was added to Destination Countries.`); onCreated?.(result.data);
+    } catch (err) { setFormError(err instanceof Error ? err.message : 'Could not add this country.'); }
+    finally { setSaving(false); }
   }
-  return <div>
-    <PageHeader title="Countries" hint="Group destination countries under Europe or Gulf. Drag to reorder, or use Move to for keyboard and touch." actions={canManage ? <Button onClick={() => setAddOpen(true)}>Add country</Button> : undefined} />
-    <div className="mb-5 flex flex-wrap gap-3"><input type="search" aria-label="Search countries" placeholder="Search countries" value={query} onChange={(e) => setQuery(e.target.value)} className="body-3 w-full max-w-xs rounded-lg border border-line bg-bg px-3 py-2" /></div>
-    {moveError && <p role="alert" className="body-6 mb-3 text-danger">{moveError}</p>}
-    {loading ? <SkeletonRows rows={7} /> : error ? <ErrorState message={error} retry={reload} /> : visible.length === 0 ? <EmptyState title="No countries match this search." hint="Add a country or clear the filters." /> : <div className="space-y-6">
-      {[['EUROPE', 'Europe'], ['GULF', 'Gulf'], ['', 'Unassigned']].map(([code, title]) => {
+  async function changeRegion(row: any, next: string) {
+    try { const result = await api<{ data: any }>(`/resource/countries/${row.id}`, { method: 'PATCH', body: { region: next || null } }); mutate(row.id, result.data); setMoveError(''); }
+    catch (err) { setMoveError(err instanceof Error ? err.message : 'Could not update the country region.'); }
+  }
+  async function changeActive(row: any) {
+    try { const result = await api<{ data: any }>(`/resource/countries/${row.id}`, { method: 'PATCH', body: { active: !row.active } }); mutate(row.id, result.data); setMoveError(''); }
+    catch (err) { setMoveError(err instanceof Error ? err.message : 'Could not update the country status.'); }
+  }
+  async function move(id: string, nextRegion: string | null, beforeId?: string) {
+    const row = data.find((item) => item.id === id); if (!row || !canManage) return;
+    const target = data.filter((item) => (item.region ?? null) === nextRegion && item.id !== id).sort((a, b) => a.displayOrder - b.displayOrder || a.name.localeCompare(b.name));
+    const at = beforeId ? target.findIndex((item) => item.id === beforeId) : -1;
+    target.splice(at < 0 ? target.length : at, 0, { ...row, region: nextRegion });
+    const previous = data; const orderedIds = target.map((item) => item.id); const next = data.map((item) => { const index = orderedIds.indexOf(item.id); return index < 0 ? item : { ...item, region: nextRegion, displayOrder: (index + 1) * 10 }; });
+    setData(next);
+    try { await api('/resource/countries/reorder', { method: 'POST', body: { region: nextRegion, orderedIds } }); setMoveError(''); }
+    catch (err) { setData(previous); setMoveError(err instanceof Error ? err.message : 'Could not save the country order.'); }
+  }
+  const flag = (iso2?: string) => iso2 && /^[A-Z]{2}$/i.test(iso2) ? String.fromCodePoint(...[...iso2.toUpperCase()].map((letter) => 127397 + letter.charCodeAt(0))) : '◉';
+  return <div className="fixed inset-0 z-[60] flex justify-end bg-black/40" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+    <section role="dialog" aria-modal="true" aria-label="Destination Countries" className="rise flex h-full w-full max-w-2xl flex-col border-l border-line bg-bg shadow-xl">
+      <header className="flex items-start justify-between gap-4 border-b border-line px-5 py-5 sm:px-7"><div><h2 className="heading-6">Destination Countries</h2><p className="body-6 mt-1 text-muted">Search and manage destination countries by business region.</p></div><Button variant="ghost" onClick={onClose} aria-label="Close country manager">×</Button></header>
+      <div className="flex flex-wrap items-center gap-2 border-b border-line p-4 sm:px-7"><input type="search" aria-label="Search countries" placeholder="Search countries…" value={query} onChange={(e) => setQuery(e.target.value)} className="body-3 min-w-48 flex-1 rounded-lg border border-line bg-surface px-3 py-2 focus-visible:outline-2 focus-visible:outline-primary"/><select aria-label="Filter by status" value={status} onChange={(e) => setStatus(e.target.value)} className="body-6 rounded-lg border border-line bg-surface px-3 py-2"><option value="">All statuses</option><option value="true">Active</option><option value="false">Inactive</option></select>{canManage && <Button size="sm" onClick={() => { setFormError(''); setAddOpen(true); }}>+ Add Country</Button>}</div>
+      <div className="min-h-0 flex-1 overflow-y-auto p-4 sm:p-7">
+        {notice && <p role="status" className="body-6 mb-3 rounded-lg border border-primary/30 bg-soft-matcha p-3 text-fg">{notice}</p>}
+        {moveError && <p role="alert" className="body-6 mb-3 rounded-lg border border-danger/30 bg-danger/5 p-3 text-danger">{moveError}</p>}
+        {loading ? <SkeletonRows rows={7} /> : error ? <ErrorState message={error} retry={reload} /> : visible.length === 0 ? <EmptyState title="No countries match this search." hint="Try another search or clear the status filter." /> : <div className="space-y-6">
+      {(['EUROPE', 'GULF', ''] as const).map((code) => {
+        const title = code === 'EUROPE' ? 'Europe' : code === 'GULF' ? 'Gulf' : 'Unassigned';
         const rows = visible.filter((row) => (row.region ?? '') === code).sort((a, b) => a.displayOrder - b.displayOrder || a.name.localeCompare(b.name));
         return <section key={code || 'unassigned'} onDragOver={(e) => e.preventDefault()} onDrop={(e) => { e.preventDefault(); const id = e.dataTransfer.getData('text/plain'); if (id) void move(id, code || null); }} aria-label={`${title} countries`} className="rounded-xl border border-line p-4">
           <div className="mb-3 flex items-baseline justify-between"><h2 className="title-2">{title}</h2><span className="caption-5 text-muted">{rows.length}</span></div>
-          {rows.length ? <div className="space-y-2">{rows.map((row) => <CountryCard key={row.id} row={row} canManage={canManage} move={move} reload={reload} mutate={mutate} />)}</div> : <p className="body-6 py-3 text-muted">Drop countries here or move one using its menu.</p>}
+          {rows.length ? <div className="divide-y divide-line overflow-hidden rounded-xl border border-line bg-surface">{rows.map((row) => <article key={row.id} draggable={canManage} onDragStart={(e) => { e.dataTransfer.setData('text/plain', row.id); e.dataTransfer.effectAllowed = 'move'; }} onDragOver={(e) => e.preventDefault()} onDrop={(e) => { e.preventDefault(); const id = e.dataTransfer.getData('text/plain'); if (id && id !== row.id) void move(id, row.region ?? null, row.id); }} className="flex flex-wrap items-center justify-between gap-3 p-3 sm:p-4"><div className="flex min-w-0 items-center gap-3"><span aria-hidden="true" className="text-xl">{flag(row.iso2Code)}</span><div><p className="title-4">{row.name}</p><p className="caption-5 mt-1 text-muted">{row.iso2Code} · {row.active ? 'Active' : 'Inactive'}</p></div></div><div className="flex flex-wrap items-center gap-2">{canManage && <select aria-label={`Move ${row.name} to a region`} className="body-6 rounded-lg border border-line bg-bg px-2 py-1.5" value={row.region ?? ''} onChange={(e) => void changeRegion(row, e.target.value)}><option value="">Unassigned</option>{regionOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select>}<span className={`caption-5 rounded-full px-2 py-1 ${row.active ? 'bg-soft-matcha text-primary' : 'bg-surface text-muted'}`}>{row.active ? 'Active' : 'Inactive'}</span>{canManage && <><Button size="sm" variant="secondary" onClick={() => setEditingCountry(row)}>Edit</Button><Button size="sm" variant="secondary" onClick={() => void changeActive(row)}>{row.active ? 'Deactivate' : 'Activate'}</Button></>}</div>{editingCountry?.id === row.id && <FormDialog open form={{ ...countryEditForm, path: `/resource/countries/${row.id}` }} initial={{ name: row.name }} onClose={() => setEditingCountry(null)} onSaved={() => { setEditingCountry(null); reload(); }} />}</article>)}</div> : <p className="body-6 py-3 text-muted">No countries in this group.</p>}
         </section>;
       })}
     </div>}
-    {addOpen && <FormDialog open form={countryForm} onClose={() => setAddOpen(false)} onSaved={() => { setAddOpen(false); reload(); }} />}
+      </div>
+    </section>
+    {addOpen && <div className="fixed inset-0 z-[70] grid place-items-center bg-black/40 p-4"><form role="dialog" aria-modal="true" aria-label="Add Country" onSubmit={(e) => void addCountry(e)} className="w-full max-w-md rounded-2xl border border-line bg-bg p-6 shadow-xl"><div className="flex items-center justify-between"><h3 className="heading-6">Add Country</h3><Button type="button" variant="ghost" aria-label="Close add country form" onClick={() => setAddOpen(false)}>×</Button></div><p className="body-6 mt-1 text-muted">Country codes are filled from the country database.</p><label className="title-4 mt-5 flex flex-col gap-1">Country name<input autoFocus required minLength={2} maxLength={200} value={name} onChange={(e) => setName(e.target.value)} className="body-3 rounded-lg border border-line bg-surface px-3 py-2" placeholder="Country name"/></label><label className="title-4 mt-4 flex flex-col gap-1">Business region (optional)<select value={region} onChange={(e) => setRegion(e.target.value)} className="body-3 rounded-lg border border-line bg-surface px-3 py-2"><option value="">Unassigned</option>{regionOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>{formError && <p role="alert" className="body-6 mt-3 text-danger">{formError}</p>}<div className="mt-6 flex justify-end gap-2"><Button type="button" variant="secondary" onClick={() => setAddOpen(false)}>Cancel</Button><Button type="submit" disabled={saving || !canManage}>{saving ? 'Adding…' : 'Add Country'}</Button></div></form></div>}
   </div>;
 }
 
@@ -128,7 +129,8 @@ export function AgenciesPage(): JSX.Element {
     <div role="tablist" aria-label="Agency types" className="mb-5 flex gap-2 border-b border-line pb-2">{tabs.map((item) => <Button key={item.key} role="tab" aria-selected={tab === item.key} variant={tab === item.key ? 'primary' : 'ghost'} onClick={() => setTab(item.key)}>{item.label}</Button>)}</div>
     {tab === 'overseas' ? <ListPage cfg={{ title: 'Overseas Agencies', hint: 'Foreign partners that provide employment demands.', resource: 'overseas-agencies', columns: [
       { header: 'Agency', cell: (row: any) => row.name }, { header: 'Country', cell: (row: any) => row.country?.name || '—' }, { header: 'Contact', cell: (row: any) => row.contactName || row.phone || row.email || '—' },
-      { header: 'Companies', cell: (row: any) => row.employers?.length ?? 0 }, { header: 'Active', cell: (row: any) => row.active ? 'Yes' : 'No' },
+      { header: 'Employer', cell: (row: any) => { const employers = row.employers ?? []; return employers.length ? <span title={employers.map((e: any) => e.employer?.legalName).filter(Boolean).join(', ')}>{employers[0]?.employer?.legalName}{employers.length > 1 ? ` +${employers.length - 1} legacy links` : ''}</span> : <span className="text-muted">Not linked</span>; } },
+      { header: 'Active demands', cell: (row: any) => (row.demands ?? []).filter((d: any) => d.active).length }, { header: 'Status', cell: (row: any) => <StatusBadge value={row.active ? 'ACTIVE' : 'INACTIVE'} /> },
     ], rowTo: (row: any) => `/agencies/${row.id}`, rowActions: [
       { label: 'Edit', perm: ['catalogue.manage'], form: (row: any) => ({ title: 'Edit overseas agency', path: `/resource/overseas-agencies/${row.id}`, method: 'PATCH', fields: [
         { name: 'name', label: 'Agency name', required: true }, { name: 'countryId', label: 'Country', type: 'select', required: true, optionsResource: { resource: 'countries', label: (c: any) => c.name } }, { name: 'contactName', label: 'Contact person' }, { name: 'phone', label: 'Phone' }, { name: 'email', label: 'Email' }, { name: 'notes', label: 'Notes', type: 'textarea' },

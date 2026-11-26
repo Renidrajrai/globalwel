@@ -1,10 +1,10 @@
 import { useState, type FormEvent, type JSX, type ReactNode } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { useAuth } from '../auth/AuthContext';
-import { BoardPage, DetailPage, ListPage } from '../components/engines';
+import { DetailPage, ListPage } from '../components/engines';
 import { Button } from '../components/Button';
 import { EmptyState, ErrorState, FormDialog, Money, PageHeader, SkeletonRows, StatusBadge } from '../components/ui';
-import { postJson, useJson } from '../lib/useApi';
+import { postJson, useJson, useOne } from '../lib/useApi';
 import { ApiError } from '../lib/api';
 
 const LIFECYCLE = ['ACTIVE', 'ON_HOLD', 'STOPPED_PENDING_SETTLEMENT', 'CLOSED_SUCCESSFULLY', 'CLOSED_UNSUCCESSFULLY'];
@@ -48,11 +48,12 @@ export function CandidatesPage(): JSX.Element {
         hint: 'Search and manage reusable applicant profiles, Refer sources and recruitment history.',
         resource: 'candidates',
         columns: [
-          { header: 'Applicant', cell: (r: any) => r.fullName },
-          { header: 'Code', cell: (r: any) => r.candidateCode },
-          { header: 'Phone', cell: (r: any) => r.phone || 'None' },
-          { header: 'Refer', cell: (r: any) => r.refer?.name || 'Direct' },
+          { header: 'Applicant', cell: (r: any) => <div><span className="title-4">{r.fullName}</span><span className="caption-5 mt-1 block text-muted">{r.candidateCode}</span></div> },
+          { header: 'Phone', cell: (r: any) => r.phone || '—' },
+          { header: 'Passport', cell: (r: any) => { const passport = r.passports?.find((p: any) => p.isCurrent); if (!passport) return <StatusBadge value="MISSING" />; const days = Math.ceil((new Date(passport.expiryDate).getTime() - Date.now()) / 86400000); return <span className={days < 0 ? 'text-danger' : days < 180 ? 'font-medium text-danger' : 'text-muted'}>{days < 0 ? 'Expired' : days < 180 ? `Expires ${String(passport.expiryDate).slice(0,10)}` : `Valid to ${String(passport.expiryDate).slice(0,10)}`}</span>; } },
+          { header: 'Referral source', cell: (r: any) => r.refer?.name || 'Direct' },
           { header: 'Applications', cell: (r: any) => r.applications?.length ?? 0 },
+          { header: 'Latest update', cell: (r: any) => String(r.updatedAt ?? r.createdAt ?? '').slice(0, 10) },
         ],
         rowTo: (r: any) => `/candidates/${r.id}`,
         primary: can('candidate.create') && can('application.create') ? { label: 'New intake', to: '/intake' } : undefined,
@@ -121,33 +122,17 @@ export function ApplicationsPage(): JSX.Element {
   const { can } = useAuth();
   if (!can('application.read')) return <AccessDenied />;
   return (
-    <>
-    <PassportApplicationSearch />
-    <BoardPage
-      cfg={{
-        title: 'Applications',
-        hint: 'Track application progress by lifecycle status.',
-        resource: 'applications',
-        statusField: 'lifecycleStatus',
-        columns: LIFECYCLE.map((status) => ({ status, label: status.replaceAll('_', ' ') })),
-        card: (r: any) => ({
-          title: r.code,
-          meta: r.candidate?.fullName,
-          tags: [r.position?.jobTitle?.title, r.position?.demand?.reference, r.position?.demand?.employer?.legalName, r.currency].filter(Boolean),
-        }),
-        to: (r: any) => `/applications/${r.id}`,
-        moves: MANUAL_LIFECYCLE.map((status) => ({
-          label: status.replaceAll('_', ' '),
-          status,
-          path: (r: any) => `/resource/applications/${r.id}/status`,
-          perm: ['application.update'],
-          when: (r: any) => r.lifecycleStatus !== status,
-        })),
-        primary: can('candidate.create') && can('application.create') ? { label: 'New intake', to: '/intake' } : undefined,
-        empty: { title: 'No applications yet.' },
-      }}
-    />
-    </>
+    <div>
+      <PassportApplicationSearch />
+      <ListPage cfg={{ title: 'Applications', hint: 'Find a candidate, review the active placement and follow recruitment progress.', resource: 'applications', responsive: true, wideSearch: true, preserveQuery: true, searchPlaceholder: 'Search candidate name or application code', filters: [{ key: 'lifecycleStatus', label: 'Status', type: 'select', options: LIFECYCLE.map((status) => ({ value: status, label: status.replaceAll('_', ' ') })) }], columns: [
+        { header: 'Application', cell: (r: any) => <div><span className="title-4">{r.code}</span><span className="caption-5 mt-1 block text-muted">{r.candidate?.fullName}</span></div> },
+        { header: 'Selected position', cell: (r: any) => r.position ? `${r.position.jobTitle?.title || 'Position'} · ${r.position.demand?.destinationCountry?.name || '—'}` : <span className="text-muted">Not selected</span> },
+        { header: 'Employer / demand', cell: (r: any) => r.position ? `${r.position.demand?.employer?.legalName || '—'} · ${r.position.demand?.reference || '—'}` : '—' },
+        { header: 'Preferences', cell: (r: any) => (r.positionPreferences ?? []).length || '—' },
+        { header: 'Status', cell: (r: any) => <StatusBadge value={r.lifecycleStatus} /> },
+        { header: 'Updated', cell: (r: any) => r.updatedAt ? String(r.updatedAt).slice(0, 10) : String(r.openedAt ?? '').slice(0, 10) },
+      ], rowTo: (r: any) => `/applications/${r.id}`, primary: can('candidate.create') && can('application.create') ? { label: 'New intake', to: '/intake' } : undefined, empty: { title: 'No applications yet.' } }} />
+    </div>
   );
 }
 
@@ -184,10 +169,13 @@ export function ApplicationDetailPage(): JSX.Element {
         fields: [
           { label: 'Candidate', value: (r: any) => r.candidate?.fullName || 'None' },
           { label: 'Position', value: (r: any) => r.position?.jobTitle?.title || 'None' },
+          { label: 'Destination', value: (r: any) => r.position?.demand?.destinationCountry?.name || 'Not assigned' },
           { label: 'Demand ID', value: (r: any) => r.position?.demand?.reference || 'None' },
           { label: 'Company', value: (r: any) => r.position?.demand?.employer?.legalName || 'None' },
+          { label: 'Overseas agency', value: (r: any) => r.position?.demand?.overseasAgency?.name || 'None' },
           { label: 'Source', value: (r: any) => r.sourceType },
           { label: 'Lifecycle', value: (r: any) => <StatusBadge value={r.lifecycleStatus} /> },
+          { label: 'Preferred positions', value: (r: any) => (r.positionPreferences ?? []).map((link: any) => `${link.position?.jobTitle?.title ?? 'Position'} · ${link.position?.demand?.destinationCountry?.name ?? 'Destination'} · ${link.position?.demand?.reference ?? ''}`).join(', ') || 'No preferences recorded' },
           { label: 'Agreed amount', value: (r: any) => <Money amount={r.agreedAmountSnapshot} currency={r.currency} /> },
           { label: 'Package total', value: (r: any) => <Money amount={r.packageTotalSnapshot} currency={r.currency} /> },
           { label: 'Opened', value: (r: any) => r.openedAt ? String(r.openedAt).slice(0, 10) : 'None' },
@@ -227,6 +215,7 @@ export function ApplicationDetailPage(): JSX.Element {
               />
             ),
           },
+          { key: 'placement', label: 'Position preferences', render: () => <ApplicationPlacement id={id ?? ''} /> },
           {
             key: 'installments',
             label: 'Installments',
@@ -294,6 +283,28 @@ export function ApplicationDetailPage(): JSX.Element {
       }}
     />
   );
+}
+
+function ApplicationPlacement({ id }: { id: string }): JSX.Element {
+  const { can } = useAuth();
+  const { data, loading, error, reload } = useOne<any>('applications', id);
+  const [positionId, setPositionId] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState('');
+  if (loading) return <SkeletonRows rows={3} />;
+  if (error || !data) return <ErrorState message={error || 'Application not found.'} retry={reload} />;
+  const preferences = data.positionPreferences ?? [];
+  async function assign() {
+    if (!positionId) return;
+    setBusy(true); setMessage('');
+    try { await postJson(`/intake/applications/${id}/assign-position`, { positionId }); setMessage('Position assigned. It is not counted as selected until a selection is recorded.'); reload(); }
+    catch (e) { setMessage(e instanceof ApiError ? e.message : 'Could not assign this position.'); }
+    finally { setBusy(false); }
+  }
+  return <section className="space-y-4">
+    <div><h2 className="title-3">Candidate preferences</h2><ul className="mt-2 divide-y divide-line border-y border-line">{preferences.map((link: any) => <li key={link.positionId} className="py-3"><p className="title-4">{link.position?.jobTitle?.title ?? 'Position'}</p><p className="caption-5 mt-1 text-muted">{link.position?.demand?.destinationCountry?.name} · {link.position?.demand?.employer?.legalName} · {link.position?.demand?.reference}</p></li>)}</ul></div>
+    <div className="rounded-lg border border-line p-4"><h3 className="title-4">Final placement</h3>{data.position ? <p className="body-6 mt-2">Assigned to {data.position.jobTitle?.title} · {data.position.demand?.reference}. Selection is managed from the demand’s worker list.</p> : !can('application.update') ? <p className="body-6 mt-2 text-muted">You do not have permission to assign a final position.</p> : preferences.length ? <div className="mt-3 flex flex-wrap items-end gap-3"><label className="body-6 flex min-w-64 flex-col gap-1">Choose one preferred position<select value={positionId} onChange={(e) => setPositionId(e.target.value)} className="body-3 rounded-lg border border-line bg-bg px-3 py-2"><option value="">Select position</option>{preferences.map((link: any) => <option key={link.positionId} value={link.positionId}>{link.position?.jobTitle?.title} · {link.position?.demand?.reference}</option>)}</select></label><Button disabled={!positionId || busy} onClick={() => void assign()}>{busy ? 'Assigning…' : 'Assign position'}</Button></div> : <p className="body-6 mt-2 text-muted">No position preferences were recorded for this application.</p>}{message && <p role="status" className="body-6 mt-2 text-muted">{message}</p>}</div>
+  </section>;
 }
 
 function CandidatePassports({ id }: { id: string }): JSX.Element {

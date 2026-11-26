@@ -37,7 +37,7 @@ export function AppShell() {
             className={({ isActive }) =>
               [
                 'body-5 flex items-center gap-2 rounded-lg px-3 py-2 transition-colors duration-300 ease-weighted',
-                isActive ? 'bg-bg' : 'hover:bg-bg',
+                isActive ? 'bg-primary text-on-primary hover:bg-primary-hover' : 'text-fg hover:bg-soft-matcha',
               ].join(' ')
             }
           >
@@ -51,7 +51,7 @@ export function AppShell() {
               className={({ isActive }) =>
                 [
                   'body-5 flex items-center gap-2 rounded-lg px-3 py-2 transition-colors duration-300 ease-weighted',
-                  isActive ? 'bg-bg' : 'hover:bg-bg',
+                  isActive ? 'bg-primary text-on-primary hover:bg-primary-hover' : 'text-fg hover:bg-soft-matcha',
                 ].join(' ')
               }
             >

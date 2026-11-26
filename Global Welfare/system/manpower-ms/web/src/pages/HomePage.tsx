@@ -8,9 +8,10 @@ import { useJson } from '../lib/useApi';
 import { api } from '../lib/api';
 
 type BusinessMetrics = { activeAgencies: number | null; activeRefers: number | null; activeCompanies: number | null; activeDemands: number | null; countriesByRegion: { region: string | null; count: number }[]; requestedVacancies: number | null; selectedWorkers: number | null; vacanciesRemaining: number | null; pendingPhoto: number | null; pendingPcc: number | null; pendingMedical: number | null };
-type Summary = { activeApplications: number | null; pendingApprovals: number | null; businessMetrics?: BusinessMetrics | null };
+type Summary = { activeApplications: number | null; pendingApprovals: number | null; totalApplicants?: number | null; onHoldApplications?: number | null; completedApplications?: number | null; businessMetrics?: BusinessMetrics | null };
 type LifecycleRow = { status: string; count: number };
 type SearchResult = { type: string; title: string; description: string; to: string };
+type ActivityRow = { id: string; at: string; action: string; actor: string; entityType: string | null; to: string | null };
 type StatState = { loading: boolean; error: string | null };
 
 const labels: Record<string, string> = {
@@ -23,6 +24,7 @@ export default function HomePage() {
   const { can, me } = useAuth();
   const summary = useJson<Summary>('/analytics/summary');
   const lifecycle = useJson<LifecycleRow[]>(can('application.read') ? '/analytics/lifecycle' : '');
+  const activity = useJson<ActivityRow[]>(can('audit.read') ? '/analytics/activity' : '');
   const [query, setQuery] = useState(''); const [searchResults, setSearchResults] = useState<SearchResult[]>([]); const [searchLoading, setSearchLoading] = useState(false); const [searchError, setSearchError] = useState('');
   const modules = MODULES.filter((m) => m.path && can(...m.anyOf));
   const maxCount = Math.max(1, ...(lifecycle.data ?? []).map((row) => row.count));
@@ -47,7 +49,12 @@ export default function HomePage() {
     <div>
       <header className="rise max-w-2xl">
         <h1 className="heading-5">Welcome, {me?.user.fullName}</h1>
-        <p className="body-6 mt-2 text-muted">A quick view of recruitment activity and the work available to you.</p>
+        <p className="body-6 mt-2 text-muted">Business activity and items that may need your attention · {new Intl.DateTimeFormat(undefined, { dateStyle: 'full' }).format(new Date())}</p>
+        <div className="mt-4 flex flex-wrap gap-2">
+          {can('candidate.create') && can('application.create') && <Link to="/intake" className="button-link-primary">Register applicant</Link>}
+          {can('catalogue.manage') && <><Link to="/demands" className="button-link-secondary">Create demand</Link><Link to="/agencies" className="button-link-secondary">Add overseas agency</Link></>}
+          <a href="#quick-search-heading" className="button-link-secondary">Search records</a>
+        </div>
       </header>
 
       <section className="mt-8 max-w-3xl" aria-labelledby="quick-search-heading">
@@ -74,6 +81,17 @@ export default function HomePage() {
           {canSeeApprovals && <div className="p-6"><dt className="body-5 text-muted">Pending approvals</dt><dd className="mt-2"><StatValue size="xl" value={summary.data?.pendingApprovals} {...stat} /></dd></div>}
         </dl>
         {summary.error && <div className="mt-3"><ErrorState message={summary.error} retry={summary.reload} /></div>}
+      </section>}
+
+      {(can('candidate.read') || canSeeApplications || can('catalogue.read')) && <section className="mt-8" aria-labelledby="operations-heading">
+        <h2 id="operations-heading" className="title-2">Operational snapshot</h2>
+        <div className="mt-3 grid grid-cols-2 gap-3 lg:grid-cols-5">
+          {can('candidate.read') && <MetricLink to="/candidates" label="Applicants" value={summary.data?.totalApplicants} {...stat} />}
+          {canSeeApplications && <MetricLink to="/applications?lifecycleStatus=ACTIVE" label="Active applications" value={summary.data?.activeApplications} {...stat} />}
+          {canSeeApplications && <MetricLink to="/applications?lifecycleStatus=ON_HOLD" label="On hold" value={summary.data?.onHoldApplications} {...stat} />}
+          {canSeeApplications && <MetricLink to="/applications?lifecycleStatus=CLOSED_SUCCESSFULLY" label="Completed" value={summary.data?.completedApplications} {...stat} />}
+          {can('catalogue.read') && <MetricLink to="/demands?active=true" label="Active demands" value={metrics?.activeDemands} {...stat} />}
+        </div>
       </section>}
 
       {canSeeApplications && <section className="mt-8" aria-labelledby="lifecycle-heading">
@@ -141,6 +159,11 @@ export default function HomePage() {
         </div>
       </section>}
 
+      {can('audit.read') && <section className="mt-10" aria-labelledby="activity-heading">
+        <h2 id="activity-heading" className="title-2">Recent business activity</h2>
+        {activity.loading ? <div className="mt-3"><SkeletonRows rows={4} /></div> : activity.error ? <div className="mt-3"><ErrorState message={activity.error} retry={activity.reload} /></div> : !activity.data?.length ? <p className="body-6 mt-3 text-muted">No recent business activity.</p> : <ol className="mt-3 divide-y divide-line border-y border-line">{activity.data.map((row) => <li key={row.id} className="flex flex-wrap items-baseline justify-between gap-2 py-3"><div className="min-w-0"><p className="body-5">{row.to ? <Link className="underline decoration-line underline-offset-2" to={row.to}>{row.action}</Link> : row.action}</p><p className="caption-5 mt-1 text-muted">{row.actor} · {row.entityType?.replaceAll('_', ' ') ?? 'record'}</p></div><time className="caption-5 shrink-0 text-muted" dateTime={row.at}>{new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(row.at))}</time></li>)}</ol>}
+      </section>}
+
       <section className="mt-10" aria-labelledby="workspace-heading">
         <h2 id="workspace-heading" className="title-2">Workspace</h2>
         <p className="body-6 mt-1 text-muted">Modules available to your role.</p>
@@ -183,4 +206,10 @@ function Figure({ label, value, loading, error }: StatState & { label: string; v
 
 function StatRow({ label, value, loading, error }: StatState & { label: string; value?: number | null }) {
   return <div className="flex items-center justify-between gap-4 py-3"><dt className="body-6 text-muted">{label}</dt><dd><StatValue size="sm" value={value} loading={loading} error={error} /></dd></div>;
+}
+
+function MetricLink({ to, label, value, loading, error }: StatState & { to: string; label: string; value?: number | null }) {
+  return <Link to={to} className="min-w-0 rounded-lg border border-line bg-bg p-4 hover:bg-surface focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-fg">
+    <span className="caption-5 block text-muted">{label}</span><span className="mt-2 block"><StatValue size="lg" value={value} loading={loading} error={error} /></span>
+  </Link>;
 }

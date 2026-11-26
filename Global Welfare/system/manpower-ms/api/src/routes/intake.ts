@@ -100,6 +100,12 @@ async function checkPassport(dob: string | null | undefined, p: PassportInput, k
 const hasCurrentPassport = async (db: Prisma.TransactionClient | typeof prisma, candidateId: string) =>
   (await db.candidatePassport.count({ where: { candidateId, isCurrent: true } })) > 0;
 
+async function validatePositionPreferences(tx: Prisma.TransactionClient, positionIds: string[]) {
+  const available = await tx.jobPosition.findMany({ where: { id: { in: positionIds }, ...availablePositionWhere() }, select: { id: true } });
+  if (available.length !== positionIds.length)
+    throw new HttpError(400, 'One or more preferred positions are no longer available. Refresh the list and choose again.');
+}
+
 async function createApplication(
   tx: Prisma.TransactionClient,
   a: { candidateId: string } & z.infer<typeof appSchema>,
@@ -285,8 +291,10 @@ intakeRouter.post('/applicant', requirePermission('candidate.create', 'applicati
           isCurrent: true, createdById: actor,
         } });
       }
-      const apps = [];
-      for (const positionId of positionIds) apps.push(await createApplication(tx, { candidateId: cand.id, ...body.application, positionId }, actor, body.passport ? null : NO_PASSPORT_HOLD));
+      await validatePositionPreferences(tx, positionIds);
+      const app = await createApplication(tx, { candidateId: cand.id, ...body.application, positionId: null }, actor, body.passport ? null : NO_PASSPORT_HOLD);
+      await tx.applicationPositionPreference.createMany({ data: positionIds.map((positionId) => ({ applicationId: app.id, positionId })) });
+      const apps = [app];
       return { cand, apps };
     }, { timeout: 15_000 });
 
@@ -331,11 +339,12 @@ intakeRouter.post('/applications', requirePermission('application.create'), h(as
   if (!candidate) throw new HttpError(404, 'Candidate not found.');
   const hold = await hasCurrentPassport(prisma, candidate.id) ? null : NO_PASSPORT_HOLD;
   const applications = await prisma.$transaction(async (tx) => {
-    const created = [];
-    for (const positionId of body.positionIds) created.push(await createApplication(tx, { ...body, positionId, assignedToId: null }, actorId(req), hold));
-    return created;
+    await validatePositionPreferences(tx, body.positionIds);
+    const created = await createApplication(tx, { ...body, positionId: null, assignedToId: null }, actorId(req), hold);
+    await tx.applicationPositionPreference.createMany({ data: body.positionIds.map((positionId) => ({ applicationId: created.id, positionId })) });
+    return [created];
   }, { timeout: 15_000, isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
-  await A(req, 'APPLICATIONS_CREATED', 'candidate', candidate.id, { applicationCount: applications.length });
+  await A(req, 'APPLICATION_CREATED', 'candidate', candidate.id, { preferenceCount: body.positionIds.length });
   res.status(201).json({ data: { candidateId: candidate.id, applications: applications.map(({ id, code, lifecycleStatus }) => ({ id, code, lifecycleStatus })) } });
 }));
 
@@ -378,6 +387,8 @@ intakeRouter.post('/applications/:id/assign-position', requirePermission('applic
     if (!app) throw new HttpError(404, 'Application not found');
     if (CLOSED.includes(app.lifecycleStatus)) throw new HttpError(409, 'Closed applications cannot change.');
     if (app.positionId) throw new HttpError(409, 'This application already has a position. The price snapshot cannot be changed.');
+    const preference = await tx.applicationPositionPreference.findUnique({ where: { applicationId_positionId: { applicationId: app.id, positionId } }, select: { applicationId: true } });
+    if (!preference) throw new HttpError(400, 'Choose one of the applicant’s recorded position preferences.');
     await tx.$queryRaw`SELECT id FROM candidate WHERE id = ${app.candidateId}::uuid FOR UPDATE`;
     if (await tx.application.findFirst({ where: { candidateId: app.candidateId, positionId, lifecycleStatus: { not: 'CLOSED_UNSUCCESSFULLY' } }, select: { id: true } }))
       throw new HttpError(409, 'This applicant already has an application for this position.');
